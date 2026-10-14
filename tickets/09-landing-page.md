@@ -10,7 +10,8 @@ daily tones, a month-by-month tone breakdown, intentions by status).
 - Shows a month-by-month tone breakdown.
 - Shows Blossoms grouped by Status.
 - Reads from Postgres on the server and works with the sample data loaded.
-- Says plainly when it's showing sample data.
+- Says plainly when it's showing sample data, using the marker the sample
+  loader writes (created in ticket 01).
 
 ## Out of scope
 - The ask box (10).
