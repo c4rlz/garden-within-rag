@@ -18,6 +18,9 @@ daily tones, a month-by-month tone breakdown, intentions by status).
 
 ## Pointers
 - `src/app/page.tsx`, `src/app/page.module.css`, `src/lib/db.ts`
+- `src/lib/dataset.ts` (`datasetKind`) for the sample-data notice
+- `AGENTS.md`: this Next.js version differs from older ones; read the guide
+  in `node_modules/next/dist/docs/` before writing Next.js code
 
 ## Constraints
 - Charts: [TODO: hand-drawn SVG, or the library installed in setup].

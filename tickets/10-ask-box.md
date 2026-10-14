@@ -15,6 +15,8 @@ The landing page needs "a box to ask questions, with cited answers".
 ## Pointers
 - Landing page (created in ticket 09), router (created in ticket 03),
   `Citation` in `src/lib/answer.ts`
+- `AGENTS.md`: this Next.js version differs from older ones; read the guide
+  in `node_modules/next/dist/docs/` before writing Next.js code
 
 ## Constraints
 - No new dependencies.

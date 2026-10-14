@@ -22,6 +22,18 @@ The brief's seven questions and their types:
 - For each, checks that the expected entries are cited and the key facts
   appear, and prints pass or fail per question with a total.
 - Exits non-zero when any question fails.
+- Expected results refer to entries by their stable sample ids, so they hold
+  however far the loader shifted the dates.
+- `npm test` does not run the evals: they call Claude and Voyage, which cost
+  money and vary between runs. Unit tests cover the eval script's checking
+  logic with canned answers.
+- The README says how to run them: load the sample database, run
+  `npm run embed` against it, then `npm run eval`.
+
+## Done by hand after implement
+The agent can only run `npm test`, so it can't run the evals. After the PR is
+up: embed the sample database and run `npm run eval`. Check that it passes
+before merging.
 
 ## Out of scope
 - Grading answer style.
