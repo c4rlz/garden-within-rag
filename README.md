@@ -60,6 +60,24 @@ npm run ask -- "What did I say I could let go of last week?"
 
 `ingest` prints how many pages it found in each database and how many have writing, which is a quick check that the token and links work.
 
+If you set up the database before the sample data existed, run `npm run db:setup` again. It's safe to re-run and adds the `dataset` table that `ingest` checks.
+
+## Sample data
+
+`sample/garden.json` is a year of made-up Garden Within entries for demos and evals. Every title starts with "Sample". It lives in its own database, never the real one: loading replaces everything stored for each source, so loading it into the real database would wipe your entries.
+
+```sh
+createdb garden_within_sample   # needs pgvector, like the real database
+npm run sample:load             # applies the schema, then loads the sample
+DATABASE_URL=postgres:///garden_within_sample npm run ask -- "What did I say I could let go of last week?"
+```
+
+- `sample:load` writes to `SAMPLE_DATABASE_URL`, which defaults to `postgres:///garden_within_sample`. It refuses to run, and changes nothing, if that could be the same database as `DATABASE_URL` (default `postgres:///garden_within_rag`): same database name on the same server, where the local socket, `localhost`, `127.0.0.1` and `::1` count as one server whatever the port. It can't tell that two different hostnames point at the same server, so don't use aliases for the real database.
+- The app and `ask` keep using the real database unless you set `DATABASE_URL` to the sample one on purpose.
+- Dates move each time the sample is loaded, by whole weeks, so the newest entry is in the past week. Run `npm run sample:load` again to bring them up to date.
+- The sample database is marked as sample data, and `npm run ingest` refuses to run against it, so real entries never mix with made-up ones.
+- `npm run sample:generate` rebuilds `sample/garden.json`. It always writes the same file.
+
 ## Development
 
 ```sh
