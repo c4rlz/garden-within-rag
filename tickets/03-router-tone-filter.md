@@ -34,5 +34,8 @@ The brief's seven questions and their types:
 - `src/lib/answer.ts`, `src/lib/claude.ts`, `scripts/ask.ts`
 
 ## Constraints
-- Routing method: [TODO: rules, Claude, or rules with Claude fallback].
+- Routing method: keyword rules first (a time phrase, a tone name, a Blossom
+  name, "each month", "changes in priorities" and similar); Claude classifies
+  only questions the rules can't place. Claude is called through
+  `complete()` in `src/lib/claude.ts`, and tests stub it.
 - Citations use the existing `Citation` shape.

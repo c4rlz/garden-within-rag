@@ -23,4 +23,4 @@ daily tones, a month-by-month tone breakdown, intentions by status).
   in `node_modules/next/dist/docs/` before writing Next.js code
 
 ## Constraints
-- Charts: [TODO: hand-drawn SVG, or the library installed in setup].
+- Charts are hand-drawn SVG. No chart library or other new dependency.

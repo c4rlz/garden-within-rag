@@ -24,4 +24,6 @@ answers into themes, then check the Status of linked Blossoms.
 - Embeddings (created in ticket 02), `links`, router (created in ticket 03)
 
 ## Constraints
-- Clustering method: [TODO]. No new dependencies.
+- Clustering method: the planner's choice of a simple method over the
+  embeddings (for example grouping entries whose embeddings are very similar),
+  explained in the plan. No new dependencies.
