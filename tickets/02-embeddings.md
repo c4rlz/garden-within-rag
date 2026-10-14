@@ -4,7 +4,7 @@
 Filter-plus-meaning and theme questions need semantic search over the written
 answers. The schema already has `entries.embedding vector(1024)`.
 
-Embeddings use Voyage AI (`voyage-3.5`, 1024 dimensions, matching the
+Embeddings use Voyage AI (`voyage-4`, 1024 dimensions by default, matching the
 `vector(1024)` column). Voyage may train on data sent to it unless the account
 has opted out, so for now only the sample database is embedded. The real
 journal is never sent to Voyage until the user turns that on.
