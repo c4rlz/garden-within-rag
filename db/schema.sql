@@ -29,3 +29,11 @@ create table if not exists links (
 );
 
 create index if not exists links_to on links (to_id);
+
+-- Marks a database loaded with made-up sample data (npm run sample:load). Stays
+-- empty in the real database. The check on kind allows one row at most.
+create table if not exists dataset (
+  kind text primary key check (kind = 'sample'),
+  loaded_at timestamptz not null default now(),
+  shift_weeks integer not null default 0    -- weeks the sample dates were moved by at load time
+);
