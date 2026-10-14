@@ -5,7 +5,12 @@
 summary for each month.
 
 ## Acceptance criteria
-- Counts Daily Seed Energy Tones and Weekly Root Tone / Feeling per month.
+- Counts Daily Seed `Energy Tone` and Weekly Root `Tone / Feeling` per month.
+  - `Energy Tone` is multi-select (Tired, Gentle, Stressed, Happy, Low): a
+    Seed can have several tones, and each one counts.
+  - `Tone / Feeling` is single-select (Grounded, Light, Restless, Energized,
+    Tender, Overwhelmed, Love).
+  - The two sets of tones are reported separately, not merged.
 - Answers with each month's counts and a one- or two-sentence summary citing entries.
 - Tests cover the counting, including months with no entries.
 

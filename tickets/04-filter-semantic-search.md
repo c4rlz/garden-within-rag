@@ -9,7 +9,13 @@ then search the written answers for meaning within that set.
   them by vector similarity to the question.
 - Answers from the top matches with citations.
 - The router sends this type here.
-- Tests cover the filter-then-rank order with stubbed embeddings.
+- If none of the filtered entries has an embedding (the real journal isn't
+  embedded yet, see ticket 02), it says semantic search isn't set up for this
+  database. It doesn't call Voyage, so the question isn't sent anywhere.
+- The question is embedded with Voyage (`input_type: "query"`), using the
+  same model as ticket 02.
+- Tests cover the filter-then-rank order and the not-set-up answer, with
+  stubbed embeddings.
 
 ## Out of scope
 - Theme clustering (08).

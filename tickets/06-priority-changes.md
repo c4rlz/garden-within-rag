@@ -5,7 +5,9 @@
 diff of the Priorities relation, then have Claude narrate it.
 
 ## Acceptance criteria
-- Computes, per Weekly Root in date order, which priorities were added or dropped.
+- Computes, per Weekly Root in date order, which priorities were added or
+  dropped. Priorities are the Root's `🌸 Priorities` relation to Blossoms in
+  🌸 The Garden, read from the Root side of `links`.
 - Claude narrates the biggest changes, citing the weeks they happened.
 - Tests cover the diff computation.
 
