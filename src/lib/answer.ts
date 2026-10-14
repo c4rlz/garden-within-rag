@@ -1,9 +1,7 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { complete } from "./claude";
 import { db } from "./db";
 import { localToday, parseDateRange, type DateRange } from "./dates";
 import { sourceDef, type Source } from "./template";
-
-const MODEL = "claude-opus-5-5";
 
 interface Row {
   id: string;
@@ -93,25 +91,7 @@ export async function answerLookup(question: string, today = localToday()): Prom
   const context = rows.map((row, i) => `[${i + 1}] ${entryLabel(row)}\n${row.content}`).join("\n\n---\n\n");
   const prompt = `Today is ${today}. The question covers ${range.label}: ${range.from} to ${range.to}.\n\n<entries>\n${context}\n</entries>\n\nQuestion: ${question}`;
 
-  const client = new Anthropic();
-  const response = await client.beta.messages.create({
-    model: MODEL,
-    max_tokens: 16000,
-    output_config: { effort: "medium" },
-    betas: ["server-side-fallback-2026-07-01"],
-    fallbacks: "default",
-    system: SYSTEM,
-    messages: [{ role: "user", content: prompt }],
-  });
-
-  if (response.stop_reason === "refusal") {
-    throw new Error(`Claude declined to answer (${response.stop_details?.category ?? "no category"}).`);
-  }
-
-  const answer = response.content
-    .map((block) => (block.type === "text" ? block.text : ""))
-    .join("")
-    .trim();
+  const answer = await complete(SYSTEM, prompt);
 
   const cited = new Set([...answer.matchAll(/\[(\d+)\]/g)].map((m) => Number(m[1])));
   const citations = [...cited]

@@ -9,11 +9,11 @@ The core rule: compute what can be computed, retrieve only what needs meaning. D
 ## How it works
 
 1. **Ingest** pulls the three template databases (🌱 Daily Seeds, 🌿 Weekly Roots, 🌸 The Garden) through the Notion API. Each page becomes one row: its written answers labeled by prompt, its structured fields, and its Blossom links.
-2. **Ask** finds the time period in the question ("last week", "the last 10 days"), loads every entry in that range, and has Claude answer with numbered citations that map back to Notion pages.
+2. **Ask** finds the time period in the question ("last week", "the last 10 days"), loads every entry in that range, and has Claude answer with numbered citations that map back to Notion pages. Claude runs through your local Claude Code by default, or the Claude API.
 
 ## Setup
 
-You need Node 22+, Postgres with [pgvector](https://github.com/pgvector/pgvector), a Notion workspace with the Garden Within template, and a Claude API key.
+You need Node 22+, Postgres with [pgvector](https://github.com/pgvector/pgvector), a Notion workspace with the Garden Within template, and either [Claude Code](https://claude.com/claude-code) or a Claude API key.
 
 ### 1. Get the template
 
@@ -41,15 +41,17 @@ Create an internal connection in the [Developer portal](https://app.notion.com/d
 
 In Notion, open each of 🌱 Daily Seeds, 🌿 Weekly Roots and 🌸 The Garden as a full page, and copy its link from **Share → Copy link**, or straight from the address bar. The tool accepts the full link or just the id at the end of it.
 
-### 4. Get a Claude API key
+### 4. Choose how Claude answers
 
-Create one in the [Claude Console](https://platform.claude.com/settings/keys) under **API keys**.
+By default the tool runs your installed Claude Code (`claude -p`), so answers use your Claude Code login and plan, with no API key. Install Claude Code and sign in once by running `claude`. The tool gives it no tools and no saved session: it only reads the entries in the question, and they don't appear in your Claude Code history.
+
+To use the Claude API instead, create a key in the [Claude Console](https://platform.claude.com/settings/keys) under **API keys**, then set `CLAUDE_BACKEND=api` and `ANTHROPIC_API_KEY` in `.env.local`.
 
 ### 5. Configure and run
 
 ```sh
 npm install
-cp .env.example .env.local   # paste the token, database links and API key
+cp .env.example .env.local   # paste the token and database links
 createdb garden_within_rag
 npm run db:setup             # create tables
 npm run ingest               # pull from Notion; run again any time to sync
@@ -68,4 +70,4 @@ npm run lint
 
 ## Privacy
 
-Journal entries stay in your local Postgres and are sent only to the Claude API to answer a question. Real entries are never committed; `.env.local` is git-ignored.
+Journal entries stay in your local Postgres and are sent to Claude only to answer a question, through Claude Code or the API. Real entries are never committed; `.env.local` is git-ignored.
