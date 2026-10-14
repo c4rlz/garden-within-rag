@@ -1,36 +1,36 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Garden Within RAG
 
-## Getting Started
+Ask questions about a [Garden Within](https://rattle-layer-d9a.notion.site/The-Garden-Within-509258cd448282cc883e816a3577324a) Notion journal and get answers that cite the exact day or week they came from.
 
-First, run the development server:
+The core rule: compute what can be computed, retrieve only what needs meaning. Dates, tones, statuses and relations are queried directly in Postgres; embeddings are only for the written answers.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+**Status:** early. Ingest and the first question type (date lookups) work. Embeddings, the other question types, the landing page and the eval script are next.
+
+## How it works
+
+1. **Ingest** pulls the three template databases (🌱 Daily Seeds, 🌿 Weekly Roots, 🌸 The Garden) through the Notion API. Each page becomes one row: its written answers labeled by prompt, its structured fields, and its Blossom links.
+2. **Ask** finds the time period in the question ("last week", "the last 10 days"), loads every entry in that range, and has Claude answer with numbered citations that map back to Notion pages.
+
+## Run it
+
+Needs Node 22+ and Postgres with [pgvector](https://github.com/pgvector/pgvector).
+
+```sh
+npm install
+cp .env.example .env.local   # then fill it in
+createdb garden_within_rag
+npm run db:setup             # create tables
+npm run ingest               # pull from Notion
+npm run ask -- "What did I say I could let go of last week?"
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+For Notion, create an internal integration at notion.so/profile/integrations, then share each of the three databases with it (••• → Connections) and paste their URLs into `.env.local`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```sh
+npm test         # unit tests
+npm run typecheck
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Privacy
 
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Journal entries stay in your local Postgres and are sent only to the Claude API to answer a question. Real entries are never committed; `.env.local` is git-ignored.
