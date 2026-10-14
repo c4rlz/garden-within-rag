@@ -26,8 +26,24 @@ journal is never sent to Voyage until the user turns that on.
   opt out of Voyage training (Atlas → Organization Settings → "Help Improve
   Voyage AI Models", which needs a payment method on file) before setting
   `EMBED_REAL_JOURNAL=yes`.
+- It connects through `DATABASE_URL` like every other script, so by default
+  it targets the real database and refuses. The README shows the sample run:
+  `DATABASE_URL=postgres:///garden_within_sample npm run embed`.
+- The text embedded is the entry's `content` column only, with
+  `input_type: "document"`.
+- The Voyage call lives in a reusable module, `src/lib/voyage.ts`, which takes
+  a list of texts and an input type (`"document"` or `"query"`). Ticket 04
+  imports it to embed questions.
+- Batch size is the implementer's choice, within Voyage's per-request limits.
+  Each batch is saved as soon as it returns, so a failed run keeps the
+  batches already done and a re-run only sends the rest.
+- It prints how many entries it embedded and how many were already done.
+- The refusal decision is a pure function of the dataset kind and the
+  environment, so it can be tested without a database.
+- The npm script follows the existing pattern:
+  `tsx --env-file-if-exists=.env.local scripts/embed.ts`.
 - Tests cover choosing which entries to embed, batching, and the refusal,
-  with the API call stubbed.
+  with the API call stubbed. None need a database or network.
 
 ## Out of scope
 - Using the embeddings in search (tickets 04 and 08).
