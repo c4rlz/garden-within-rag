@@ -9,7 +9,7 @@ The core rule: compute what can be computed, retrieve only what needs meaning. D
 ## How it works
 
 1. **Ingest** pulls the three template databases (🌱 Daily Seeds, 🌿 Weekly Roots, 🌸 The Garden) through the Notion API. Each page becomes one row: its written answers labeled by prompt, its structured fields, and its Blossom links.
-2. **Ask** finds the time period in the question ("last week", "the last 10 days"), loads every entry in that range, and has Claude answer with numbered citations that map back to Notion pages. Claude runs through your local Claude Code by default, or the Claude API.
+2. **Ask** first works out the question's type with keyword rules (Claude classifies the rest). Lookup questions find the time period ("last week", "the last 10 days") and load every entry in that range; tone questions ("the weeks I felt Overwhelmed") load the Weekly Roots with that Tone / Feeling and the Daily Seeds from those weeks. Either way, it has Claude answer with numbered citations that map back to Notion pages. Claude runs through your local Claude Code by default, or the Claude API.
 
 ## Setup
 
