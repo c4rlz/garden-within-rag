@@ -4,12 +4,12 @@ Ask questions about a [Garden Within](https://rattle-layer-d9a.notion.site/The-G
 
 The core rule: compute what can be computed, retrieve only what needs meaning. Dates, tones, statuses and relations are queried directly in Postgres; embeddings are only for the written answers.
 
-**Status:** early. Ingest, the first question type (date lookups) and embeddings for the sample data work. Search over embeddings, the other question types, the landing page and the eval script are next.
+**Status:** early. Ingest, embeddings for the sample data, and three question types work: date lookups, Tone / Feeling filters, and Energy Tone questions searched by meaning. Blossom and over-time questions, the landing page and the eval script are next.
 
 ## How it works
 
 1. **Ingest** pulls the three template databases (🌱 Daily Seeds, 🌿 Weekly Roots, 🌸 The Garden) through the Notion API. Each page becomes one row: its written answers labeled by prompt, its structured fields, and its Blossom links.
-2. **Ask** first works out the question's type with keyword rules (Claude classifies the rest). Lookup questions find the time period ("last week", "the last 10 days") and load every entry in that range; tone questions ("the weeks I felt Overwhelmed") load the Weekly Roots with that Tone / Feeling and the Daily Seeds from those weeks. Either way, it has Claude answer with numbered citations that map back to Notion pages. Claude runs through your local Claude Code by default, or the Claude API.
+2. **Ask** first works out the question's type with keyword rules (Claude classifies the rest). Lookup questions find the time period ("last week", "the last 10 days") and load every entry in that range; tone questions ("the weeks I felt Overwhelmed") load the Weekly Roots with that Tone / Feeling and the Daily Seeds from those weeks. Energy Tone questions ("What has my body been asking for on Tired days?") load that tone's Daily Seeds in Postgres, then rank the embedded ones by similarity to the question, and Claude gets the 12 closest; until the database is embedded, they say semantic search isn't set up. Each way, it has Claude answer with numbered citations that map back to Notion pages. Claude runs through your local Claude Code by default, or the Claude API.
 
 ## Setup
 
@@ -94,5 +94,7 @@ npm run lint
 Journal entries stay in your local Postgres and are sent to Claude only to answer a question, through Claude Code or the API. Real entries are never committed; `.env.local` is git-ignored.
 
 `npm run embed` sends written answers (each entry's `content`) to [Voyage AI](https://www.voyageai.com/) to embed them. Voyage may train on data sent to it unless your account has opted out, so only the sample database is embedded by default: `npm run embed` refuses, sending nothing, against any database not marked as sample data, including the real one at the default `DATABASE_URL`.
+
+Energy Tone questions also send the question itself to Voyage, to embed it for search. That only happens when the matching entries are embedded and the same rule allows it: the sample database, or `EMBED_REAL_JOURNAL=yes`. Otherwise the question isn't sent anywhere.
 
 To embed your real journal, first opt out of training: in MongoDB Atlas, go to **Organization Settings** and turn off **Help Improve Voyage AI Models**. This setting needs a payment method on file. Then set `EMBED_REAL_JOURNAL=yes` in `.env.local` and run `npm run embed`.
