@@ -3,21 +3,28 @@ import assert from "node:assert/strict";
 import {
   answerFilter,
   answerFilterMeaning,
+  answerPriorities,
   answerQuestion,
   answerRelation,
+  biggestChanges,
   citationsFrom,
   filterPrompt,
   linkedEntryIds,
   parseBlossomReply,
   pickBlossom,
+  priorityChanges,
+  priorityTimeline,
+  priorityWeeks,
   scoreBlossoms,
   titleWords,
   weeksOf,
   type Answer,
   type EmbeddedRow,
   type Link,
+  type PriorityChange,
   type Row,
 } from "../src/lib/answer";
+import { addDays } from "../src/lib/dates";
 import { ENERGY_TONES } from "../src/lib/router";
 import { VoyageError } from "../src/lib/voyage";
 
@@ -161,6 +168,10 @@ function stubDeps() {
         calls.push(`relation ${today}`);
         return stubAnswer(q, "relation");
       },
+      answerPriorities: async (q: string, today: string) => {
+        calls.push(`priorities ${today}`);
+        return stubAnswer(q, "priorities");
+      },
     },
   };
 }
@@ -179,7 +190,11 @@ test("tone questions go to answerFilter with the template's spelling", async () 
 });
 
 test("types not built yet say so without calling any answerer or Claude", async () => {
-  const cases: [string, RegExp][] = [["What was each month's tone?", /change over time aren't supported yet/]];
+  const cases: [string, RegExp][] = [
+    ["What was each month's tone?", /change over time aren't supported yet/],
+    ["What recurring themes haven't I made progress on?", /change over time aren't supported yet/],
+    ["How have I changed over time?", /change over time aren't supported yet/],
+  ];
   for (const [question, message] of cases) {
     const { calls, deps } = stubDeps();
     const result = await answerQuestion(question, TODAY, deps);
@@ -187,6 +202,21 @@ test("types not built yet say so without calling any answerer or Claude", async 
     assert.deepEqual(result.citations, []);
     assert.deepEqual(calls, [], question);
   }
+});
+
+test("a question Claude classifies as over time, with no sub-type, isn't supported yet", async () => {
+  const { calls, deps } = stubDeps();
+  deps.classify = async () => "over time";
+  const result = await answerQuestion("What keeps me going?", TODAY, deps);
+  assert.match(result.answer, /change over time aren't supported yet/);
+  assert.deepEqual(calls, []);
+});
+
+test("priority questions go to answerPriorities", async () => {
+  const { calls, deps } = stubDeps();
+  const result = await answerQuestion("What have been the biggest changes in priorities?", TODAY, deps);
+  assert.equal(result.answer, "priorities");
+  assert.deepEqual(calls, [`priorities ${TODAY}`]);
 });
 
 test("relation questions go to answerRelation", async () => {
@@ -593,4 +623,204 @@ test("linked entries with no writing don't call Claude", async () => {
   assert.equal(result.filter, "Linked to Sample: Start mornings with 5 minute meditation: 2 entries");
   assert.equal(result.answer, '2 entries are linked to "Sample: Start mornings with 5 minute meditation", but none have writing.');
   assert.equal(result.entriesConsidered, 0);
+});
+
+const PA = blossom("pa", "Alpha");
+const PB = blossom("pb", "Bravo");
+const PC = blossom("pc", "Charlie");
+const PD = blossom("pd", "Delta");
+const PRIORITY_BLOSSOMS = [PA, PB, PC, PD];
+
+const priorities = (rootId: string, ...ids: string[]): Link[] =>
+  ids.map((to_id) => ({ from_id: rootId, to_id, property: "🌸 Priorities" }));
+
+const sorted = (ids: Iterable<string>) => [...ids].sort();
+
+// One Root per entry, linked to the listed Blossoms.
+function weeksFrom(spec: [string, string[]][]) {
+  const roots = spec.map(([date], i) => row(`r${i}`, "root", date));
+  const links = spec.flatMap(([, ids], i) => priorities(`r${i}`, ...ids));
+  return priorityWeeks(roots, links, PRIORITY_BLOSSOMS);
+}
+
+const summary = (changes: PriorityChange[]) =>
+  changes.map((c) => ({ week: c.week.from, added: sorted(c.added), dropped: sorted(c.dropped), size: c.size }));
+
+test("priorityWeeks merges two Roots in one week and sorts weeks by date", () => {
+  const roots = [row("r3", "root", "2026-09-21"), row("r1", "root", "2026-09-07"), row("r2", "root", "2026-09-09")];
+  const links = [...priorities("r3", "pc"), ...priorities("r1", "pa"), ...priorities("r2", "pb")];
+  assert.deepEqual(
+    priorityWeeks(roots, links, PRIORITY_BLOSSOMS).map((w) => [w.from, w.to, w.roots.map((r) => r.id), sorted(w.priorities)]),
+    [
+      ["2026-09-07", "2026-09-13", ["r1", "r2"], ["pa", "pb"]],
+      ["2026-09-21", "2026-09-27", ["r3"], ["pc"]],
+    ],
+  );
+});
+
+test("priorityWeeks skips Roots with no priorities and ignores unknown Blossoms, other properties and non-Roots", () => {
+  const roots = [row("r1", "root", "2026-09-07"), row("r2", "root", "2026-09-14"), row("r3", "root", "2026-09-21")];
+  const links: Link[] = [
+    ...priorities("r1", "pa", "gone"),
+    { from_id: "r2", to_id: "pb", property: "🌸 Blossom" },
+    ...priorities("s1", "pc"), // a Seed, not one of the Roots
+    ...priorities("r3", "gone"),
+  ];
+  assert.deepEqual(
+    priorityWeeks(roots, links, PRIORITY_BLOSSOMS).map((w) => [w.from, sorted(w.priorities)]),
+    [["2026-09-07", ["pa"]]],
+  );
+});
+
+test("priorityChanges treats the first week as the baseline and computes added and dropped", () => {
+  const weeks = weeksFrom([
+    ["2026-09-07", ["pa", "pb"]],
+    ["2026-09-14", ["pb", "pc", "pd"]],
+  ]);
+  assert.deepEqual(summary(priorityChanges(weeks)), [{ week: "2026-09-14", added: ["pc", "pd"], dropped: ["pa"], size: 3 }]);
+});
+
+test("priorityChanges compares across a missing week and an empty Root, and leaves out unchanged weeks", () => {
+  const roots = [
+    row("r1", "root", "2026-09-07"),
+    row("r2", "root", "2026-09-14"), // no priorities: not "dropped everything"
+    row("r3", "root", "2026-09-28"), // 09-21 has no Root at all
+    row("r4", "root", "2026-10-05"), // same as r3
+  ];
+  const links = [...priorities("r1", "pa"), ...priorities("r3", "pa", "pb"), ...priorities("r4", "pa", "pb")];
+  const weeks = priorityWeeks(roots, links, PRIORITY_BLOSSOMS);
+  assert.deepEqual(summary(priorityChanges(weeks)), [{ week: "2026-09-28", added: ["pb"], dropped: [], size: 1 }]);
+});
+
+test("biggestChanges ranks by added plus dropped, caps at 8, breaks ties by the earlier week, and shows in date order", () => {
+  const sets = [["pa"], ["pa", "pb"], ["pc", "pd"], ["pc"], ["pa", "pb"], ["pa"], ["pb", "pc"], ["pb"], ["pd", "pa"], ["pd"], ["pd", "pc"]];
+  const weeks = weeksFrom(sets.map((ids, i): [string, string[]] => [addDays("2026-06-01", 7 * i), ids]));
+  const changes = priorityChanges(weeks);
+  // Weeks 1–10 change by 1, 4, 1, 3, 1, 3, 1, 3, 1, 1.
+  assert.deepEqual(changes.map((c) => c.size), [1, 4, 1, 3, 1, 3, 1, 3, 1, 1]);
+  // The four big weeks, then the earliest four of the size-1 ties; weeks 9 and 10 miss out.
+  assert.deepEqual(
+    biggestChanges(changes).map((c) => c.week.from),
+    [1, 2, 3, 4, 5, 6, 7, 8].map((i) => addDays("2026-06-01", 7 * i)),
+  );
+});
+
+test("biggestChanges picks a bigger change over an earlier smaller one", () => {
+  const weeks = weeksFrom([
+    ["2026-09-07", ["pa"]],
+    ["2026-09-14", ["pa", "pb"]], // +1
+    ["2026-09-21", ["pc", "pd"]], // +2 −2
+  ]);
+  assert.deepEqual(biggestChanges(priorityChanges(weeks), 1).map((c) => c.week.from), ["2026-09-21"]);
+});
+
+test("priorityTimeline gives each priority's first week, last week and week count by title", () => {
+  const weeks = weeksFrom([
+    ["2026-09-07", ["pb"]],
+    ["2026-09-14", ["pa", "pb"]],
+    ["2026-09-28", ["pa"]],
+  ]);
+  assert.deepEqual(priorityTimeline(weeks, PRIORITY_BLOSSOMS), [
+    { title: "Bravo", first: "2026-09-07", last: "2026-09-14", weeks: 2 },
+    { title: "Alpha", first: "2026-09-14", last: "2026-09-28", weeks: 2 },
+  ]);
+});
+
+function priorityDeps(roots: Row[], links: Link[]) {
+  return {
+    complete: failingComplete,
+    allRoots: async () => roots,
+    priorityLinks: async () => links,
+    allBlossoms: async () => PRIORITY_BLOSSOMS,
+  };
+}
+
+test("a priorities question sends Claude the numbered biggest changes and the timeline, citing each week's Root", async () => {
+  let system = "";
+  let prompt = "";
+  const roots = [
+    row("r1", "root", "2026-09-07", "settling in"),
+    row("r2", "root", "2026-09-14", ""), // no writing, still cited
+    row("r2b", "root", "2026-09-16", "midweek rethink"), // same week as r2
+    row("r3", "root", "2026-09-21", "dropped the extras"),
+  ];
+  const links = [...priorities("r1", "pa"), ...priorities("r2", "pa", "pb"), ...priorities("r2b", "pc"), ...priorities("r3", "pd")];
+
+  const result = await answerPriorities("What have been the biggest changes in priorities?", TODAY, {
+    ...priorityDeps(roots, links),
+    complete: async (s, p) => {
+      system = s;
+      prompt = p;
+      return "You took on more [1], then narrowed to one [2]. [3]";
+    },
+  });
+
+  assert.match(system, /already been worked out/);
+  assert.equal(result.range, null);
+  assert.equal(result.filter, "Priorities across 3 weeks: 2 changes shown");
+  assert.equal(result.entriesConsidered, 4);
+  assert.match(prompt, /covers your whole history/);
+  assert.match(prompt, /\[1\] Weekly Root · week of 2026-09-14\nAdded: Bravo, Charlie\nmidweek rethink/);
+  assert.match(prompt, /\[2\] Weekly Root · week of 2026-09-21\nAdded: Delta\nDropped: Alpha, Bravo, Charlie\ndropped the extras/);
+  assert.doesNotMatch(prompt, /\[3\]/);
+  assert.doesNotMatch(prompt, /settling in/); // the baseline week isn't a change
+  assert.match(prompt, /<timeline>\nAlpha: week of 2026-09-07 to week of 2026-09-14 \(2 weeks\)\n/);
+  assert.match(prompt, /Delta: week of 2026-09-21 to week of 2026-09-21 \(1 week\)\n<\/timeline>/);
+  assert.match(prompt, /Question: What have been the biggest changes in priorities\?$/);
+  assert.deepEqual(result.citations, [
+    { n: 1, label: "Weekly Root", date: "2026-09-14", url: "https://notion.so/r2" },
+    { n: 2, label: "Weekly Root", date: "2026-09-21", url: "https://notion.so/r3" },
+  ]);
+});
+
+test("fewer than two weeks with priorities says there isn't enough history, without Claude", async () => {
+  const roots = [row("r1", "root", "2026-09-07"), row("r2", "root", "2026-09-14")];
+  for (const links of [[], priorities("r1", "pa")]) {
+    const result = await answerPriorities("How have my priorities changed?", TODAY, priorityDeps(roots, links));
+    assert.match(result.answer, /There isn't enough priority history yet/);
+    assert.deepEqual(result.citations, []);
+    assert.equal(result.entriesConsidered, 0);
+  }
+});
+
+test("unchanged priorities say so without Claude", async () => {
+  const roots = [row("r1", "root", "2026-09-07"), row("r2", "root", "2026-09-14")];
+  const result = await answerPriorities(
+    "How have my priorities changed?",
+    TODAY,
+    priorityDeps(roots, [...priorities("r1", "pa"), ...priorities("r2", "pa")]),
+  );
+  assert.equal(result.answer, "Your priorities stayed the same across 2 weeks.");
+  assert.equal(result.filter, "Priorities across 2 weeks: 0 changes shown");
+  assert.equal(result.entriesConsidered, 2);
+});
+
+test("a time phrase narrows the comparison to Roots in that range", async () => {
+  let prompt = "";
+  const roots = [row("old", "root", "2026-08-03"), row("r1", "root", "2026-09-21"), row("r2", "root", "2026-10-05")];
+  const links = [...priorities("old", "pd"), ...priorities("r1", "pa"), ...priorities("r2", "pa", "pb")];
+  const result = await answerPriorities("How have my priorities changed in the last 4 weeks?", TODAY, {
+    ...priorityDeps(roots, links),
+    complete: async (_s, p) => {
+      prompt = p;
+      return "You added one [1].";
+    },
+  });
+  assert.deepEqual(result.range, { from: "2026-09-17", to: TODAY, label: "the last 4 weeks" });
+  assert.equal(result.filter, "Priorities across 2 weeks: 1 change shown");
+  assert.equal(result.entriesConsidered, 2);
+  assert.match(prompt, /covers the last 4 weeks: 2026-09-17 to 2026-10-14/);
+  assert.doesNotMatch(prompt, /Delta/);
+  assert.deepEqual(result.citations, [{ n: 1, label: "Weekly Root", date: "2026-10-05", url: "https://notion.so/r2" }]);
+});
+
+test("a time phrase with too little history names the range", async () => {
+  const roots = [row("r1", "root", "2026-09-07"), row("r2", "root", "2026-09-14")];
+  const result = await answerPriorities(
+    "How have my priorities changed last week?",
+    TODAY,
+    priorityDeps(roots, [...priorities("r1", "pa"), ...priorities("r2", "pb")]),
+  );
+  assert.match(result.answer, /There isn't enough priority history last week \(2026-10-05 to 2026-10-11\) yet/);
+  assert.equal(result.range?.label, "last week");
 });

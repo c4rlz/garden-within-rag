@@ -12,23 +12,35 @@ const TYPES: QuestionType[] = ["lookup", "filter", "filter + meaning", "relation
 export const ENERGY_TONES = ["Tired", "Gentle", "Stressed", "Happy", "Low"]; // Daily Seeds
 export const ROOT_TONES = ["Grounded", "Light", "Restless", "Energized", "Tender", "Overwhelmed", "Love"]; // Weekly Roots
 
+export type OverTimeKind = "priorities" | "monthly tone" | "themes";
+
 export interface Route {
   type: QuestionType;
   tone?: string; // spelled as in the template
+  overTime?: OverTimeKind;
 }
 
-const OVER_TIME = [
-  /\beach month\b/,
-  /\bevery month\b/,
-  /\bmonth by month\b/,
-  /\bper month\b/,
-  /\bweek by week\b/,
-  /\bover time\b/,
-  /\bchanges? in (?:my )?priorities\b/,
-  /\bpriorities (?:have )?changed\b/,
-  /\brecurring themes?\b/,
-  /\bhaven['’]?t (?:i )?made (?:any )?progress\b/,
+// Checked in order, so a question naming priorities is about priorities even
+// if it also says "each month". A null kind comes from the question's keywords.
+const OVER_TIME: [RegExp, OverTimeKind | null][] = [
+  [/\bchanges? in (?:my )?priorities\b/, "priorities"],
+  [/\bpriorities (?:have )?changed\b/, "priorities"],
+  [/\brecurring themes?\b/, "themes"],
+  [/\bhaven['’]?t (?:i )?made (?:any )?progress\b/, "themes"],
+  [/\beach month\b/, "monthly tone"],
+  [/\bevery month\b/, "monthly tone"],
+  [/\bmonth by month\b/, "monthly tone"],
+  [/\bper month\b/, "monthly tone"],
+  [/\bweek by week\b/, null],
+  [/\bover time\b/, null],
 ];
+
+function overTimeKeyword(q: string): OverTimeKind | null {
+  if (/\bpriorit/.test(q)) return "priorities";
+  if (/\bthemes?\b/.test(q)) return "themes";
+  if (/\b(?:tones?|months?|monthly)\b/.test(q)) return "monthly tone";
+  return null;
+}
 
 const RELATION = [/\bintentions?\b/, /\bblossoms?\b/, /\bhow ha(?:s|ve) my\b.*\bgone\b/];
 
@@ -39,7 +51,11 @@ function findTone(q: string, tones: string[]): string | undefined {
 export function routeByRules(question: string, today = localToday()): Route | null {
   const q = question.toLowerCase();
 
-  if (OVER_TIME.some((re) => re.test(q))) return { type: "over time" };
+  const overTime = OVER_TIME.find(([re]) => re.test(q));
+  if (overTime) {
+    const kind = overTime[1] ?? overTimeKeyword(q);
+    return kind ? { type: "over time", overTime: kind } : { type: "over time" };
+  }
   if (RELATION.some((re) => re.test(q))) return { type: "relation" };
 
   const energy = findTone(q, ENERGY_TONES);

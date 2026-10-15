@@ -35,6 +35,29 @@ test("other over-time and relation phrasings", () => {
   assert.equal(routeByRules("Which Blossoms did I finish?", TODAY)?.type, "relation");
 });
 
+test("over-time questions get a sub-type, and their type stays over time", () => {
+  const cases: [string, string | undefined][] = [
+    ["What have been the biggest changes in priorities?", "priorities"],
+    ["What recurring themes haven't I made progress on?", "themes"],
+    ["What was each month's tone?", "monthly tone"],
+    ["How have my priorities changed?", "priorities"],
+    ["How have my priorities shifted week by week?", "priorities"],
+    ["What were the changes in my priorities each month?", "priorities"],
+    ["Which themes kept coming up over time?", "themes"],
+    ["How have I changed over time?", undefined],
+  ];
+  for (const [question, overTime] of cases) {
+    const route = routeByRules(question, TODAY);
+    assert.equal(route?.type, "over time", question);
+    assert.equal(route?.overTime, overTime, question);
+  }
+  assert.deepEqual(routeByRules("How have I changed over time?", TODAY), { type: "over time" });
+});
+
+test("Claude's over-time classification has no sub-type", async () => {
+  assert.deepEqual(await routeQuestion("What keeps me going?", TODAY, async () => "over time"), { type: "over time" });
+});
+
 test("tones match case-insensitively on whole words", () => {
   assert.deepEqual(routeByRules("weeks i felt OVERWHELMED", TODAY), { type: "filter", tone: "Overwhelmed" });
   assert.equal(routeByRules("What made the week feel lighter?", TODAY), null);

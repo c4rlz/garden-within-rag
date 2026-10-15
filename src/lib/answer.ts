@@ -482,6 +482,191 @@ export async function answerRelation(
   return { question, range: null, filter, answer, citations: citationsFrom(answer, rows), entriesConsidered: rows.length };
 }
 
+// The Root side of a Weekly Root's priorities.
+export const PRIORITIES_PROP = "🌸 Priorities";
+
+// How many of the biggest week-to-week changes Claude narrates.
+export const TOP_CHANGES = 8;
+
+export interface PriorityWeek extends Week {
+  roots: Row[]; // the week's Roots with priorities, by entry_date
+  priorities: Set<string>; // Blossom ids
+}
+
+export interface PriorityChange {
+  week: PriorityWeek;
+  added: string[]; // Blossom ids
+  dropped: string[];
+  size: number;
+}
+
+// One entry per week whose Roots set any priorities, in date order. Roots in
+// the same week are merged, and a Root with no known priorities is skipped.
+export function priorityWeeks(roots: Row[], links: Link[], blossoms: Row[]): PriorityWeek[] {
+  const rootIds = new Set(roots.map((r) => r.id));
+  const blossomIds = new Set(blossoms.map((b) => b.id));
+  const byRoot = new Map<string, Set<string>>();
+  for (const link of links) {
+    if (link.property !== PRIORITIES_PROP || !rootIds.has(link.from_id) || !blossomIds.has(link.to_id)) continue;
+    byRoot.set(link.from_id, (byRoot.get(link.from_id) ?? new Set()).add(link.to_id));
+  }
+
+  const weeks = new Map<string, PriorityWeek>();
+  const sorted = [...roots].sort((a, b) => (a.entry_date ?? "").localeCompare(b.entry_date ?? ""));
+  for (const root of sorted) {
+    const priorities = byRoot.get(root.id);
+    if (!root.entry_date || !priorities) continue;
+    const from = startOfWeek(root.entry_date);
+    const week = weeks.get(from) ?? { from, to: addDays(from, 6), roots: [], priorities: new Set<string>() };
+    week.roots.push(root);
+    for (const id of priorities) week.priorities.add(id);
+    weeks.set(from, week);
+  }
+  return [...weeks.values()].sort((a, b) => a.from.localeCompare(b.from));
+}
+
+// Each week against the previous week with priorities. The first week is the
+// baseline, and weeks where nothing changed are left out.
+export function priorityChanges(weeks: PriorityWeek[]): PriorityChange[] {
+  return weeks.slice(1).flatMap((week, i) => {
+    const prev = weeks[i].priorities;
+    const added = [...week.priorities].filter((id) => !prev.has(id));
+    const dropped = [...prev].filter((id) => !week.priorities.has(id));
+    const size = added.length + dropped.length;
+    return size ? [{ week, added, dropped, size }] : [];
+  });
+}
+
+// Picked by size (ties go to the earlier week), then shown in date order.
+export function biggestChanges(changes: PriorityChange[], n = TOP_CHANGES): PriorityChange[] {
+  return [...changes]
+    .sort((a, b) => b.size - a.size || a.week.from.localeCompare(b.week.from))
+    .slice(0, n)
+    .sort((a, b) => a.week.from.localeCompare(b.week.from));
+}
+
+export interface PrioritySpan {
+  title: string;
+  first: string; // week start
+  last: string;
+  weeks: number;
+}
+
+// Each priority's first and last week, by first week and then title.
+export function priorityTimeline(weeks: PriorityWeek[], blossoms: Row[]): PrioritySpan[] {
+  const spans = new Map<string, PrioritySpan>();
+  const titles = new Map(blossoms.map((b) => [b.id, b.title]));
+  for (const week of weeks) {
+    for (const id of week.priorities) {
+      const span = spans.get(id);
+      if (span) {
+        span.last = week.from;
+        span.weeks++;
+      } else {
+        spans.set(id, { title: titles.get(id) ?? id, first: week.from, last: week.from, weeks: 1 });
+      }
+    }
+  }
+  return [...spans.values()].sort((a, b) => a.first.localeCompare(b.first) || a.title.localeCompare(b.title));
+}
+
+const PRIORITIES_SYSTEM = `You describe how the user's priorities changed in their Garden Within journal. Priorities are the Blossoms (intentions) set on each Weekly Root.
+
+The changes have already been worked out: each numbered week lists the priorities added and dropped since the previous week that had priorities, and they are the biggest changes, in date order. Don't recompute, re-rank or add to them. Narrate the biggest changes, using the week's writing where it explains why. The timeline is background only.
+Speak to the user as "you". Be brief and plain. Cite every week you mention with its number in square brackets, like [2] or [1][3]. Only the numbered weeks can be cited; never cite the timeline.`;
+
+export function prioritiesPrompt(
+  shown: PriorityChange[],
+  timeline: PrioritySpan[],
+  blossoms: Row[],
+  question: string,
+  today: string,
+  range: DateRange | null,
+): string {
+  const titles = new Map(blossoms.map((b) => [b.id, b.title]));
+  const names = (ids: string[]) => ids.map((id) => titles.get(id) ?? id).sort().join(", ");
+  const changes = shown
+    .map((change, i) => {
+      const lines = [`[${i + 1}] Weekly Root · week of ${change.week.from}`];
+      if (change.added.length) lines.push(`Added: ${names(change.added)}`);
+      if (change.dropped.length) lines.push(`Dropped: ${names(change.dropped)}`);
+      const writing = change.week.roots.map((r) => r.content).filter((c) => c !== "");
+      if (writing.length) lines.push(writing.join("\n\n"));
+      return lines.join("\n");
+    })
+    .join("\n\n---\n\n");
+  const spans = timeline
+    .map((s) => `${s.title}: week of ${s.first} to week of ${s.last} (${plural(s.weeks, "week")})`)
+    .join("\n");
+  const covers = range ? `${range.label}: ${range.from} to ${range.to}` : "your whole history";
+  return `Today is ${today}. The question covers ${covers}. These are the ${plural(shown.length, "biggest week-to-week change", "biggest week-to-week changes")} in your priorities, in date order.\n\n<changes>\n${changes}\n</changes>\n\n<timeline>\n${spans}\n</timeline>\n\nQuestion: ${question}`;
+}
+
+async function allRoots(): Promise<Row[]> {
+  const { rows } = await db().query<Row>(
+    `select ${COLUMNS} from entries where source = 'root' and entry_date is not null order by entry_date`,
+  );
+  return rows;
+}
+
+async function priorityLinks(): Promise<Link[]> {
+  const { rows } = await db().query<Link>(`select from_id, to_id, property from links where property = $1`, [
+    PRIORITIES_PROP,
+  ]);
+  return rows;
+}
+
+// Priority questions: diff each week's Priorities against the previous week's
+// in code, rank the weeks by how much changed, and have Claude narrate the
+// biggest changes, citing each week's Root.
+export async function answerPriorities(
+  question: string,
+  today = localToday(),
+  deps: {
+    complete: (system: string, prompt: string) => Promise<string>;
+    allRoots: () => Promise<Row[]>;
+    priorityLinks: () => Promise<Link[]>;
+    allBlossoms: () => Promise<Row[]>;
+  } = { complete, allRoots, priorityLinks, allBlossoms },
+): Promise<Answer> {
+  const range = parseDateRange(question, today);
+  const roots = (await deps.allRoots()).filter(
+    (r) => !range || (r.entry_date >= range.from && r.entry_date <= range.to),
+  );
+  const blossoms = await deps.allBlossoms();
+  const weeks = priorityWeeks(roots, await deps.priorityLinks(), blossoms);
+  const compared = weeks.reduce((n, w) => n + w.roots.length, 0);
+  const none = { question, range, citations: [] };
+
+  if (weeks.length < 2) {
+    const when = range ? ` ${range.label} (${range.from} to ${range.to})` : "";
+    return {
+      ...none,
+      filter: `Priorities across ${plural(weeks.length, "week")}: 0 changes shown`,
+      answer: `There isn't enough priority history${when} yet: priorities need to be set on Weekly Roots in at least two weeks to compare.`,
+      entriesConsidered: 0,
+    };
+  }
+
+  const shown = biggestChanges(priorityChanges(weeks));
+  const filter = `Priorities across ${plural(weeks.length, "week")}: ${plural(shown.length, "change")} shown`;
+  if (shown.length === 0) {
+    return {
+      ...none,
+      filter,
+      answer: `Your priorities stayed the same across ${plural(weeks.length, "week")}.`,
+      entriesConsidered: compared,
+    };
+  }
+
+  const prompt = prioritiesPrompt(shown, priorityTimeline(weeks, blossoms), blossoms, question, today, range);
+  const answer = await deps.complete(PRIORITIES_SYSTEM, prompt);
+  // Each week is cited as its earliest Root, written or not.
+  const rows = shown.map((change) => change.week.roots[0]);
+
+  return { question, range, filter, answer, citations: citationsFrom(answer, rows), entriesConsidered: compared };
+}
+
 const NOT_SUPPORTED: Partial<Record<QuestionType, string>> = {
   "over time": "Questions about change over time aren't supported yet.",
 };
@@ -507,12 +692,14 @@ export async function answerQuestion(
     answerFilter: (question: string, tone: string, today: string) => Promise<Answer>;
     answerFilterMeaning: (question: string, tone: string, today: string) => Promise<Answer>;
     answerRelation: (question: string, today: string) => Promise<Answer>;
+    answerPriorities: (question: string, today: string) => Promise<Answer>;
   } = {
     classify: complete,
     answerLookup,
     answerFilter: (q, tone, t) => answerFilter(q, tone, t),
     answerFilterMeaning: (q, tone, t) => answerFilterMeaning(q, tone, t),
     answerRelation: (q, t) => answerRelation(q, t),
+    answerPriorities: (q, t) => answerPriorities(q, t),
   },
 ): Promise<Answer> {
   const route = await routeQuestion(question, today, deps.classify);
@@ -527,5 +714,8 @@ export async function answerQuestion(
     return { ...notSupported(question, null), answer: `Name an Energy Tone to filter by: ${ENERGY_TONES.join(", ")}.` };
   }
   if (route?.type === "relation") return deps.answerRelation(question, today);
+  // Monthly tone and themes aren't built yet, and neither is an over-time
+  // question with no sub-type.
+  if (route?.type === "over time" && route.overTime === "priorities") return deps.answerPriorities(question, today);
   return notSupported(question, route?.type ?? null);
 }
