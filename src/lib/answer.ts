@@ -342,10 +342,13 @@ export function scoreBlossoms(question: string, blossoms: Row[]): ScoredBlossom[
     .sort((a, b) => b.score - a.score);
 }
 
-// The single clear best match, or null when Claude should choose.
-export function pickBlossom(scored: ScoredBlossom[]): Row | null {
+// The single clear best match, or null when Claude should choose. A match is
+// clear only if the title covers at least half of the question's meaningful
+// words, so one shared word ("learn") can't pick the wrong Blossom.
+export function pickBlossom(scored: ScoredBlossom[], question: string): Row | null {
   const [best, next] = scored;
   if (!best || best.score === 0 || (next && next.score === best.score)) return null;
+  if (best.score * 2 < titleWords(question).size) return null;
   return best.row;
 }
 
@@ -441,7 +444,7 @@ export async function answerRelation(
 
   const scored = scoreBlossoms(question, blossoms);
   const blossom =
-    pickBlossom(scored) ??
+    pickBlossom(scored, question) ??
     parseBlossomReply(
       await deps.complete(CHOOSE_BLOSSOM_SYSTEM, chooseBlossomPrompt(question, blossoms.map((b) => b.title))),
       blossoms,

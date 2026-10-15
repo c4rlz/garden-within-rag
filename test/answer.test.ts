@@ -414,12 +414,18 @@ test("scoreBlossoms counts shared words, highest first", () => {
   assert.equal(scored[0].row, MEDITATION);
   assert.equal(scored[0].score, 2);
   assert.deepEqual(scored.slice(1).map((s) => s.score), [0, 0]);
-  assert.equal(pickBlossom(scored), MEDITATION);
+  assert.equal(pickBlossom(scored, "How has my morning meditation intention actually gone?"), MEDITATION);
 });
 
 test("pickBlossom gives up on a tie or a zero score", () => {
-  assert.equal(pickBlossom(scoreBlossoms("How are my walks going?", [WALKS, blossom("b2", "Walk the dog")])), null);
-  assert.equal(pickBlossom(scoreBlossoms("How is yoga going?", [WALKS, READING])), null);
+  assert.equal(pickBlossom(scoreBlossoms("How are my walks going?", [WALKS, blossom("b2", "Walk the dog")]), "How are my walks going?"), null);
+  assert.equal(pickBlossom(scoreBlossoms("How is yoga going?", [WALKS, READING]), "How is yoga going?"), null);
+});
+
+test("pickBlossom leaves a weak one-word overlap to Claude", () => {
+  const bread = blossom("b3", "Sample: Learn to bake bread");
+  const question = "How has my intention to learn underwater basket weaving gone?";
+  assert.equal(pickBlossom(scoreBlossoms(question, [bread, WALKS]), question), null);
 });
 
 test("parseBlossomReply accepts a listed title with or without Sample:, and nothing else", () => {
