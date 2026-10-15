@@ -4,7 +4,7 @@ Ask questions about a [Garden Within](https://rattle-layer-d9a.notion.site/The-G
 
 The core rule: compute what can be computed, retrieve only what needs meaning. Dates, tones, statuses and relations are queried directly in Postgres; embeddings are only for the written answers.
 
-**Status:** early. Ingest and the first question type (date lookups) work. Embeddings, the other question types, the landing page and the eval script are next.
+**Status:** early. Ingest, the first question type (date lookups) and embeddings for the sample data work. Search over embeddings, the other question types, the landing page and the eval script are next.
 
 ## How it works
 
@@ -69,8 +69,11 @@ If you set up the database before the sample data existed, run `npm run db:setup
 ```sh
 createdb garden_within_sample   # needs pgvector, like the real database
 npm run sample:load             # applies the schema, then loads the sample
+DATABASE_URL=postgres:///garden_within_sample npm run embed
 DATABASE_URL=postgres:///garden_within_sample npm run ask -- "What did I say I could let go of last week?"
 ```
+
+- `embed` needs `VOYAGE_API_KEY` in `.env.local`. It embeds each entry's written answers with Voyage AI's `voyage-4`, and saves each batch as it comes back. Running it again only sends entries that are new or whose writing changed, so it's also how to finish a run that stopped partway. It refuses to run against any database not marked as sample data (see Privacy).
 
 - `sample:load` writes to `SAMPLE_DATABASE_URL`, which defaults to `postgres:///garden_within_sample`. It refuses to run, and changes nothing, if that could be the same database as `DATABASE_URL` (default `postgres:///garden_within_rag`): same database name on the same server, where the local socket, `localhost`, `127.0.0.1` and `::1` count as one server whatever the port. It can't tell that two different hostnames point at the same server, so don't use aliases for the real database.
 - The app and `ask` keep using the real database unless you set `DATABASE_URL` to the sample one on purpose.
@@ -89,3 +92,7 @@ npm run lint
 ## Privacy
 
 Journal entries stay in your local Postgres and are sent to Claude only to answer a question, through Claude Code or the API. Real entries are never committed; `.env.local` is git-ignored.
+
+`npm run embed` sends written answers (each entry's `content`) to [Voyage AI](https://www.voyageai.com/) to embed them. Voyage may train on data sent to it unless your account has opted out, so only the sample database is embedded by default: `npm run embed` refuses, sending nothing, against any database not marked as sample data, including the real one at the default `DATABASE_URL`.
+
+To embed your real journal, first opt out of training: in MongoDB Atlas, go to **Organization Settings** and turn off **Help Improve Voyage AI Models**. This setting needs a payment method on file. Then set `EMBED_REAL_JOURNAL=yes` in `.env.local` and run `npm run embed`.
