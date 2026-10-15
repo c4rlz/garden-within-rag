@@ -667,6 +667,206 @@ export async function answerPriorities(
   return { question, range, filter, answer, citations: citationsFrom(answer, rows), entriesConsidered: compared };
 }
 
+// How many Daily Seeds with writing each month's summary sees.
+export const SEEDS_PER_MONTH = 5;
+
+export interface MonthTones {
+  month: string; // YYYY-MM
+  seeds: Record<string, number>; // Energy Tone → Seeds with it
+  roots: Record<string, number>; // Tone / Feeling → Roots with it
+}
+
+type ToneRow = Pick<Row, "source" | "entry_date" | "tones">;
+
+function toneList(source: Source): string[] {
+  return source === "seed" ? ENERGY_TONES : source === "root" ? ROOT_TONES : [];
+}
+
+// Whether the row has a date and at least one tone from its template list.
+export function hasTones(row: ToneRow): boolean {
+  const list = toneList(row.source);
+  return !!row.entry_date && row.tones.some((t) => list.includes(t));
+}
+
+// A Root belongs to the month of its Week Of Monday, so one created on the
+// Sunday after stays with the week it reflects on.
+export function monthOf(row: ToneRow): string {
+  return (row.source === "root" ? startOfWeek(row.entry_date) : row.entry_date).slice(0, 7);
+}
+
+// Every YYYY-MM from first to last, inclusive.
+export function monthsBetween(first: string, last: string): string[] {
+  const months: string[] = [];
+  let [year, month] = first.split("-").map(Number);
+  for (let key = first; key <= last; key = `${year}-${String(month).padStart(2, "0")}`) {
+    months.push(key);
+    if (++month > 12) {
+      month = 1;
+      year++;
+    }
+  }
+  return months;
+}
+
+// Each month's tone counts, oldest first, from the first month with tones to
+// the last, gaps included. Every Energy Tone a Seed has counts; tones outside
+// the template lists are dropped, and rows with none are skipped.
+export function monthlyToneCounts(rows: ToneRow[]): MonthTones[] {
+  const toned = rows.filter(hasTones);
+  if (toned.length === 0) return [];
+  const keys = toned.map(monthOf).sort();
+  const months = monthsBetween(keys[0], keys[keys.length - 1]).map(
+    (month): MonthTones => ({
+      month,
+      seeds: Object.fromEntries(ENERGY_TONES.map((t) => [t, 0])),
+      roots: Object.fromEntries(ROOT_TONES.map((t) => [t, 0])),
+    }),
+  );
+  const byMonth = new Map(months.map((m) => [m.month, m]));
+  for (const row of toned) {
+    const month = byMonth.get(monthOf(row))!;
+    const counts = row.source === "seed" ? month.seeds : month.roots;
+    for (const tone of new Set(row.tones)) if (tone in counts) counts[tone]++;
+  }
+  return months;
+}
+
+// "2026-01" → "Jan 2026". en-US, because some ICU versions write "Sept." in en-CA.
+export function monthLabel(month: string): string {
+  return new Date(`${month}-01T00:00:00Z`).toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
+}
+
+// Up to n rows spread evenly through the list, first and last included.
+export function spreadPick<T>(rows: T[], n: number): T[] {
+  if (rows.length <= n) return rows;
+  if (n <= 1) return rows.slice(0, n);
+  return Array.from({ length: n }, (_, i) => rows[Math.round((i * (rows.length - 1)) / (n - 1))]);
+}
+
+function isEmptyMonth(m: MonthTones): boolean {
+  return [...Object.values(m.seeds), ...Object.values(m.roots)].every((n) => n === 0);
+}
+
+// The non-zero counts in template order, e.g. "Daily Seeds: Tired 3, Happy 2 · Weekly Roots: Grounded 1".
+export function formatCounts(m: MonthTones): string {
+  const side = (counts: Record<string, number>) =>
+    Object.entries(counts)
+      .filter(([, n]) => n > 0)
+      .map(([tone, n]) => `${tone} ${n}`)
+      .join(", ") || "none";
+  return `Daily Seeds: ${side(m.seeds)} · Weekly Roots: ${side(m.roots)}`;
+}
+
+async function seedsAndRoots(): Promise<Row[]> {
+  const { rows } = await db().query<Row>(
+    `select ${COLUMNS} from entries where source in ('seed', 'root') and entry_date is not null order by entry_date, source`,
+  );
+  return rows;
+}
+
+const MONTHLY_TONE_SYSTEM = `You summarise the tone of each month in the user's Garden Within journal: Daily Seeds (daily reflections, with Energy Tones) and Weekly Roots (weekly reviews, with a Tone / Feeling).
+
+Each month's tone counts have already been worked out. Don't recount, correct or restate them. For each month, write one or two sentences on what the month felt like, using its entries' writing where there is any. Speak to the user as "you". Be brief and plain.
+Cite entries with their number in square brackets, like [2] or [1][3]. Only the numbered entries can be cited. A month with no entries listed is summarised from its counts, with no citations.
+Reply with exactly one line per month, in the form "YYYY-MM: <summary>", and nothing else.`;
+
+// The written entries each month's summary sees: every Root, and up to
+// SEEDS_PER_MONTH Seeds spread through the month, in date order.
+export function pickMonthEntries(month: string, rows: Row[]): Row[] {
+  const written = rows.filter((r) => r.content !== "" && monthOf(r) === month);
+  const roots = written.filter((r) => r.source === "root");
+  const seeds = spreadPick(written.filter((r) => r.source === "seed"), SEEDS_PER_MONTH);
+  return [...roots, ...seeds].sort((a, b) => a.entry_date.localeCompare(b.entry_date) || a.source.localeCompare(b.source));
+}
+
+// Entries are numbered across all months, so `picked` (in month order) maps
+// citations back with citationsFrom. Months with no tones are left out.
+export function monthlyTonePrompt(
+  months: MonthTones[],
+  picked: Map<string, Row[]>,
+  question: string,
+  today: string,
+  range: DateRange | null,
+): string {
+  let n = 0;
+  const sections = months
+    .filter((m) => !isEmptyMonth(m))
+    .map((m) => {
+      const entries = (picked.get(m.month) ?? []).map((row) => `[${++n}] ${entryLabel(row)}\n${row.content}`);
+      const body = entries.length ? entries.join("\n\n") : "(no writing this month)";
+      return `## ${m.month} (${monthLabel(m.month)})\n${formatCounts(m)}\n\n${body}`;
+    })
+    .join("\n\n---\n\n");
+  const covers = range ? `${range.label}: ${range.from} to ${range.to}` : "your whole history";
+  return `Today is ${today}. The question covers ${covers}.\n\n<months>\n${sections}\n</months>\n\nQuestion: ${question}`;
+}
+
+// Summary lines ("YYYY-MM: …") for the months asked about. Anything else is ignored.
+export function parseMonthSummaries(reply: string, months: string[]): Map<string, string> {
+  const asked = new Set(months);
+  const summaries = new Map<string, string>();
+  for (const line of reply.split("\n")) {
+    const match = line.match(/^[\s*\-]*(\d{4}-\d{2})[*\s]*:[*\s]*(\S.*?)\s*$/);
+    if (match && asked.has(match[1]) && !summaries.has(match[1])) summaries.set(match[1], match[2]);
+  }
+  return summaries;
+}
+
+// Monthly tone questions: count each month's Energy Tones and Tones / Feelings
+// in code, then have Claude write a short cited summary for every month with
+// tones, in one call.
+export async function answerMonthlyTone(
+  question: string,
+  today = localToday(),
+  deps: {
+    complete: (system: string, prompt: string) => Promise<string>;
+    seedsAndRoots: () => Promise<Row[]>;
+  } = { complete, seedsAndRoots },
+): Promise<Answer> {
+  const range = parseDateRange(question, today);
+  const rows = (await deps.seedsAndRoots()).filter(
+    (r) => !range || (r.entry_date >= range.from && r.entry_date <= range.to),
+  );
+  const toneRows = rows.filter(hasTones);
+  const counted = toneRows.length;
+  const months = monthlyToneCounts(toneRows);
+
+  if (counted === 0) {
+    const when = range ? ` ${range.label} (${range.from} to ${range.to})` : "";
+    return {
+      question,
+      range,
+      filter: "Tones across 0 months",
+      answer: `You didn't set any Energy Tones or Tones / Feelings${when}.`,
+      citations: [],
+      entriesConsidered: 0,
+    };
+  }
+
+  const toned = months.filter((m) => !isEmptyMonth(m));
+  // Only counted entries are sent, so the summaries match the counts.
+  const picked = new Map(toned.map((m) => [m.month, pickMonthEntries(m.month, toneRows)]));
+  const reply = await deps.complete(MONTHLY_TONE_SYSTEM, monthlyTonePrompt(months, picked, question, today, range));
+  const summaries = parseMonthSummaries(reply, [...picked.keys()]);
+
+  const answer = months
+    .map((m) => {
+      const summary = isEmptyMonth(m) ? "No entries this month" : (summaries.get(m.month) ?? "No summary for this month");
+      return `**${monthLabel(m.month)}**\n${formatCounts(m)}\n${summary}`;
+    })
+    .join("\n\n");
+  const cited = toned.flatMap((m) => picked.get(m.month) ?? []);
+
+  return {
+    question,
+    range,
+    filter: `Tones across ${plural(months.length, "month")}`,
+    answer,
+    citations: citationsFrom(answer, cited),
+    entriesConsidered: counted,
+  };
+}
+
 const NOT_SUPPORTED: Partial<Record<QuestionType, string>> = {
   "over time": "Questions about change over time aren't supported yet.",
 };
@@ -693,6 +893,7 @@ export async function answerQuestion(
     answerFilterMeaning: (question: string, tone: string, today: string) => Promise<Answer>;
     answerRelation: (question: string, today: string) => Promise<Answer>;
     answerPriorities: (question: string, today: string) => Promise<Answer>;
+    answerMonthlyTone: (question: string, today: string) => Promise<Answer>;
   } = {
     classify: complete,
     answerLookup,
@@ -700,6 +901,7 @@ export async function answerQuestion(
     answerFilterMeaning: (q, tone, t) => answerFilterMeaning(q, tone, t),
     answerRelation: (q, t) => answerRelation(q, t),
     answerPriorities: (q, t) => answerPriorities(q, t),
+    answerMonthlyTone: (q, t) => answerMonthlyTone(q, t),
   },
 ): Promise<Answer> {
   const route = await routeQuestion(question, today, deps.classify);
@@ -714,8 +916,8 @@ export async function answerQuestion(
     return { ...notSupported(question, null), answer: `Name an Energy Tone to filter by: ${ENERGY_TONES.join(", ")}.` };
   }
   if (route?.type === "relation") return deps.answerRelation(question, today);
-  // Monthly tone and themes aren't built yet, and neither is an over-time
-  // question with no sub-type.
+  // Themes aren't built yet, and neither is an over-time question with no sub-type.
   if (route?.type === "over time" && route.overTime === "priorities") return deps.answerPriorities(question, today);
+  if (route?.type === "over time" && route.overTime === "monthly tone") return deps.answerMonthlyTone(question, today);
   return notSupported(question, route?.type ?? null);
 }

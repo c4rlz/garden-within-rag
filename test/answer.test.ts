@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   answerFilter,
   answerFilterMeaning,
+  answerMonthlyTone,
   answerPriorities,
   answerQuestion,
   answerRelation,
@@ -10,12 +11,16 @@ import {
   citationsFrom,
   filterPrompt,
   linkedEntryIds,
+  monthLabel,
+  monthlyToneCounts,
   parseBlossomReply,
+  parseMonthSummaries,
   pickBlossom,
   priorityChanges,
   priorityTimeline,
   priorityWeeks,
   scoreBlossoms,
+  spreadPick,
   titleWords,
   weeksOf,
   type Answer,
@@ -172,6 +177,10 @@ function stubDeps() {
         calls.push(`priorities ${today}`);
         return stubAnswer(q, "priorities");
       },
+      answerMonthlyTone: async (q: string, today: string) => {
+        calls.push(`monthly tone ${today}`);
+        return stubAnswer(q, "monthly tone");
+      },
     },
   };
 }
@@ -191,7 +200,6 @@ test("tone questions go to answerFilter with the template's spelling", async () 
 
 test("types not built yet say so without calling any answerer or Claude", async () => {
   const cases: [string, RegExp][] = [
-    ["What was each month's tone?", /change over time aren't supported yet/],
     ["What recurring themes haven't I made progress on?", /change over time aren't supported yet/],
     ["How have I changed over time?", /change over time aren't supported yet/],
   ];
@@ -210,6 +218,13 @@ test("a question Claude classifies as over time, with no sub-type, isn't support
   const result = await answerQuestion("What keeps me going?", TODAY, deps);
   assert.match(result.answer, /change over time aren't supported yet/);
   assert.deepEqual(calls, []);
+});
+
+test("monthly tone questions go to answerMonthlyTone", async () => {
+  const { calls, deps } = stubDeps();
+  const result = await answerQuestion("What was each month's tone?", TODAY, deps);
+  assert.equal(result.answer, "monthly tone");
+  assert.deepEqual(calls, [`monthly tone ${TODAY}`]);
 });
 
 test("priority questions go to answerPriorities", async () => {
@@ -823,4 +838,191 @@ test("a time phrase with too little history names the range", async () => {
   );
   assert.match(result.answer, /There isn't enough priority history last week \(2026-10-05 to 2026-10-11\) yet/);
   assert.equal(result.range?.label, "last week");
+});
+
+const toned = (id: string, source: "seed" | "root", entry_date: string, tones: string[], content = `${id} text`) =>
+  row(id, source, entry_date, content, tones);
+
+test("monthlyToneCounts counts every Energy Tone on a Seed and keeps Seed and Root tones apart", () => {
+  const [jan] = monthlyToneCounts([
+    toned("s1", "seed", "2026-01-06", ["Tired", "Happy"]),
+    toned("s2", "seed", "2026-01-07", ["Tired"]),
+    toned("r1", "root", "2026-01-12", ["Grounded"]),
+  ]);
+  assert.deepEqual(jan, {
+    month: "2026-01",
+    seeds: { Tired: 2, Gentle: 0, Stressed: 0, Happy: 1, Low: 0 },
+    roots: { Grounded: 1, Light: 0, Restless: 0, Energized: 0, Tender: 0, Overwhelmed: 0, Love: 0 },
+  });
+});
+
+test("monthlyToneCounts covers every month oldest first, with zeros for a gap month and across a new year", () => {
+  const months = monthlyToneCounts([
+    toned("s2", "seed", "2026-02-10", ["Low"]),
+    toned("s1", "seed", "2025-12-03", ["Gentle"]),
+  ]);
+  assert.deepEqual(months.map((m) => m.month), ["2025-12", "2026-01", "2026-02"]);
+  assert.ok(Object.values(months[1].seeds).every((n) => n === 0));
+  assert.ok(Object.values(months[1].roots).every((n) => n === 0));
+  assert.equal(months[2].seeds.Low, 1);
+});
+
+test("monthlyToneCounts skips rows with no tones or no date, and drops tones outside the template", () => {
+  const months = monthlyToneCounts([
+    toned("s1", "seed", "2026-01-05", []),
+    toned("s2", "seed", null as unknown as string, ["Tired"]),
+    toned("s3", "seed", "2026-03-05", ["Calm"]), // a renamed option: not counted, doesn't stretch the span
+    toned("s4", "seed", "2026-02-05", ["Happy", "Calm"]),
+  ]);
+  assert.deepEqual(months.map((m) => m.month), ["2026-02"]);
+  assert.deepEqual(Object.keys(months[0].seeds), ENERGY_TONES);
+  assert.equal(months[0].seeds.Happy, 1);
+  assert.deepEqual(monthlyToneCounts([toned("s1", "seed", "2026-01-05", [])]), []);
+});
+
+test("monthlyToneCounts puts a Root in the month of its Week Of Monday", () => {
+  const months = monthlyToneCounts([
+    toned("r1", "root", "2026-03-30", ["Light"]), // a Monday: March
+    toned("r2", "root", "2026-03-01", ["Tender"]), // a Sunday: the week of Feb 23
+    toned("s1", "seed", "2026-03-01", ["Tired"]), // Seeds go by their own date
+  ]);
+  assert.deepEqual(
+    months.map((m) => [m.month, m.roots.Light, m.roots.Tender, m.seeds.Tired]),
+    [
+      ["2026-02", 0, 1, 0],
+      ["2026-03", 1, 0, 1],
+    ],
+  );
+});
+
+test("monthLabel and spreadPick", () => {
+  assert.equal(monthLabel("2026-01"), "Jan 2026");
+  assert.equal(monthLabel("2026-09"), "Sep 2026");
+  const twelve = Array.from({ length: 12 }, (_, i) => i);
+  const picked = spreadPick(twelve, 5);
+  assert.equal(picked.length, 5);
+  assert.equal(picked[0], 0);
+  assert.equal(picked[4], 11);
+  assert.deepEqual(spreadPick([1, 2, 3], 5), [1, 2, 3]);
+});
+
+test("parseMonthSummaries keeps only the months asked about", () => {
+  const summaries = parseMonthSummaries(
+    "Here you go:\n\n2026-01: Tired but steady [1].\n**2026-03:** Lighter [2].\n2026-05: Not asked.\n",
+    ["2026-01", "2026-02", "2026-03"],
+  );
+  assert.deepEqual([...summaries], [
+    ["2026-01", "Tired but steady [1]."],
+    ["2026-03", "Lighter [2]."],
+  ]);
+});
+
+function monthlyRows(): Row[] {
+  const janSeeds = Array.from({ length: 7 }, (_, i) =>
+    toned(`sj${i + 1}`, "seed", `2026-01-0${i + 1}`, i === 0 ? ["Tired", "Happy"] : ["Tired"]),
+  );
+  return [
+    ...janSeeds,
+    toned("sj8", "seed", "2026-01-08", ["Low"], ""), // no writing: counted, not sent
+    toned("rj", "root", "2026-01-05", ["Grounded"], "jan root"),
+    toned("rm", "root", "2026-03-09", ["Light"], "march root"),
+    toned("sm", "seed", "2026-03-10", ["Gentle"], ""),
+    toned("sx", "seed", "2026-03-11", []), // no tones: not counted
+  ];
+}
+
+test("a monthly tone question sends Claude each month's counts and picked entries, and cites them", async () => {
+  let system = "";
+  let prompt = "";
+  const result = await answerMonthlyTone("What was each month's tone?", TODAY, {
+    seedsAndRoots: async () => monthlyRows(),
+    complete: async (s, p) => {
+      system = s;
+      prompt = p;
+      return "2026-01: You were tired but steady [1][4].\n2026-02: Should be ignored [2].\n2026-03: Lighter [7].";
+    },
+  });
+
+  assert.match(system, /already been worked out/);
+  assert.equal(result.range, null);
+  assert.equal(result.filter, "Tones across 3 months");
+  assert.equal(result.entriesConsidered, 11);
+  assert.match(prompt, /covers your whole history/);
+  assert.match(prompt, /## 2026-01 \(Jan 2026\)\nDaily Seeds: Tired 7, Happy 1, Low 1 · Weekly Roots: Grounded 1\n\n\[1\] Daily Seed/);
+  // 5 of the 7 written Seeds, spread through the month, plus the Root.
+  for (const id of ["sj1", "sj3", "sj4", "sj6", "sj7"]) assert.match(prompt, new RegExp(`${id} text`));
+  for (const id of ["sj2", "sj5", "sx"]) assert.doesNotMatch(prompt, new RegExp(`${id} text`));
+  assert.match(prompt, /\[4\] Weekly Root · .*\njan root/);
+  assert.match(prompt, /\[7\] Weekly Root · .*\nmarch root/);
+  assert.doesNotMatch(prompt, /\[8\]/);
+  assert.doesNotMatch(prompt, /2026-02/);
+
+  assert.equal(
+    result.answer,
+    [
+      "**Jan 2026**\nDaily Seeds: Tired 7, Happy 1, Low 1 · Weekly Roots: Grounded 1\nYou were tired but steady [1][4].",
+      "**Feb 2026**\nDaily Seeds: none · Weekly Roots: none\nNo entries this month",
+      "**Mar 2026**\nDaily Seeds: Gentle 1 · Weekly Roots: Light 1\nLighter [7].",
+    ].join("\n\n"),
+  );
+  assert.deepEqual(result.citations, [
+    { n: 1, label: "Daily Seed", date: "2026-01-01", url: "https://notion.so/sj1" },
+    { n: 4, label: "Weekly Root", date: "2026-01-05", url: "https://notion.so/rj" },
+    { n: 7, label: "Weekly Root", date: "2026-03-09", url: "https://notion.so/rm" },
+  ]);
+});
+
+test("a month with tones but no writing is summarised from its counts, and a missing summary gets a fixed line", async () => {
+  let prompt = "";
+  const result = await answerMonthlyTone("What was each month's tone?", TODAY, {
+    seedsAndRoots: async () => [toned("s1", "seed", "2026-05-04", ["Stressed"], "")],
+    complete: async (_s, p) => {
+      prompt = p;
+      return "I'm not sure.";
+    },
+  });
+  assert.match(prompt, /## 2026-05 \(May 2026\)\nDaily Seeds: Stressed 1 · Weekly Roots: none\n\n\(no writing this month\)/);
+  assert.equal(result.answer, "**May 2026**\nDaily Seeds: Stressed 1 · Weekly Roots: none\nNo summary for this month");
+  assert.deepEqual(result.citations, []);
+  assert.equal(result.entriesConsidered, 1);
+});
+
+test("no tones at all says so without Claude", async () => {
+  const rows = [toned("s1", "seed", "2026-09-04", []), toned("s2", "seed", "2026-09-05", ["Calm"])];
+  const result = await answerMonthlyTone("What was each month's tone?", TODAY, {
+    seedsAndRoots: async () => rows,
+    complete: failingComplete,
+  });
+  assert.equal(result.answer, "You didn't set any Energy Tones or Tones / Feelings.");
+  assert.equal(result.filter, "Tones across 0 months");
+  assert.deepEqual(result.citations, []);
+  assert.equal(result.entriesConsidered, 0);
+
+  const ranged = await answerMonthlyTone("What was my tone last month?", TODAY, {
+    seedsAndRoots: async () => [toned("s1", "seed", "2026-08-04", ["Happy"])],
+    complete: failingComplete,
+  });
+  assert.equal(ranged.answer, "You didn't set any Energy Tones or Tones / Feelings last month (2026-09-01 to 2026-09-30).");
+});
+
+test("a time phrase narrows the months counted", async () => {
+  let prompt = "";
+  const rows = [
+    toned("old", "seed", "2026-08-10", ["Happy"]),
+    toned("s1", "seed", "2026-09-15", ["Low"]),
+    toned("r1", "root", "2026-09-20", ["Restless"]), // a Sunday, in the week of Sep 14
+  ];
+  const result = await answerMonthlyTone("What was my tone last month?", TODAY, {
+    seedsAndRoots: async () => rows,
+    complete: async (_s, p) => {
+      prompt = p;
+      return "2026-09: Restless and low [2].";
+    },
+  });
+  assert.deepEqual(result.range, { from: "2026-09-01", to: "2026-09-30", label: "last month" });
+  assert.equal(result.filter, "Tones across 1 month");
+  assert.equal(result.entriesConsidered, 2);
+  assert.match(prompt, /covers last month: 2026-09-01 to 2026-09-30/);
+  assert.doesNotMatch(prompt, /2026-08|old text/);
+  assert.deepEqual(result.citations, [{ n: 2, label: "Weekly Root", date: "2026-09-20", url: "https://notion.so/r1" }]);
 });
