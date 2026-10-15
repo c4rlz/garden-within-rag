@@ -21,13 +21,13 @@ function toIso(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
-function addDays(iso: string, days: number): string {
+export function addDays(iso: string, days: number): string {
   const d = toDate(iso);
   d.setUTCDate(d.getUTCDate() + days);
   return toIso(d);
 }
 
-function startOfWeek(iso: string): string {
+export function startOfWeek(iso: string): string {
   const weekday = (toDate(iso).getUTCDay() + 6) % 7; // Monday = 0
   return addDays(iso, -weekday);
 }
