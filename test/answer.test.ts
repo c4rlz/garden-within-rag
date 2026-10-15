@@ -1,6 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { answerFilter, answerQuestion, citationsFrom, filterPrompt, weeksOf, type Answer, type Row } from "../src/lib/answer";
+import {
+  answerFilter,
+  answerFilterMeaning,
+  answerQuestion,
+  citationsFrom,
+  filterPrompt,
+  weeksOf,
+  type Answer,
+  type EmbeddedRow,
+  type Row,
+} from "../src/lib/answer";
+import { ENERGY_TONES } from "../src/lib/router";
+import { VoyageError } from "../src/lib/voyage";
 
 const TODAY = "2026-10-14";
 
@@ -134,6 +146,10 @@ function stubDeps() {
         calls.push(`filter ${tone}`);
         return stubAnswer(q, "filter");
       },
+      answerFilterMeaning: async (q: string, tone: string) => {
+        calls.push(`filter + meaning ${tone}`);
+        return stubAnswer(q, "filter + meaning");
+      },
     },
   };
 }
@@ -153,7 +169,6 @@ test("tone questions go to answerFilter with the template's spelling", async () 
 
 test("types not built yet say so without calling any answerer or Claude", async () => {
   const cases: [string, RegExp][] = [
-    ["What has my body been asking for on Tired days?", /Energy Tone aren't supported yet/],
     ["How has my morning meditation intention actually gone?", /Blossom has gone aren't supported yet/],
     ["What was each month's tone?", /change over time aren't supported yet/],
   ];
@@ -179,4 +194,181 @@ test("a filter classification with no tone asks for one", async () => {
   const result = await answerQuestion("What were my rough weeks like?", TODAY, deps);
   assert.match(result.answer, /Name a Tone \/ Feeling/);
   assert.deepEqual(calls, []);
+});
+
+test("Energy Tone questions go to answerFilterMeaning with the template's spelling", async () => {
+  const { calls, deps } = stubDeps();
+  const result = await answerQuestion("What has my body been asking for on Tired days?", TODAY, deps);
+  assert.equal(result.answer, "filter + meaning");
+  assert.deepEqual(calls, ["filter + meaning Tired"]);
+});
+
+test("a filter + meaning classification with no tone lists the Energy Tones", async () => {
+  const { calls, deps } = stubDeps();
+  deps.classify = async () => "filter + meaning";
+  const result = await answerQuestion("What did my body need on rough days?", TODAY, deps);
+  assert.equal(result.answer, `Name an Energy Tone to filter by: ${ENERGY_TONES.join(", ")}.`);
+  assert.deepEqual(calls, []);
+});
+
+const seed = (id: string, entry_date: string, embedding: number[] | null, content = `${id} text`): EmbeddedRow => ({
+  ...row(id, "seed", entry_date, content, ["Tired"]),
+  embedding,
+});
+
+const failingEmbed = async (): Promise<number[]> => {
+  throw new Error("embedQuery should not be called");
+};
+
+test("filter + meaning filters first, then embeds the question, then ranks and asks Claude", async () => {
+  const calls: string[] = [];
+  let prompt = "";
+  const seeds = [
+    seed("far", "2026-09-01", [0, 1]),
+    seed("near", "2026-09-10", [1, 0]),
+    seed("mid", "2026-09-05", [1, 1]),
+  ];
+  const question = "What has my body been asking for on Tired days?";
+
+  const result = await answerFilterMeaning(question, "Tired", TODAY, {
+    seedsWithEnergyTone: async (tone) => {
+      calls.push(`filter ${tone}`);
+      return seeds;
+    },
+    queryRefusal: async () => {
+      calls.push("refusal");
+      return null;
+    },
+    embedQuery: async (q) => {
+      calls.push(`embed ${q}`);
+      return [1, 0];
+    },
+    complete: async (_system, p) => {
+      calls.push("complete");
+      prompt = p;
+      return "Rest [1] and walks [3].";
+    },
+  });
+
+  assert.deepEqual(calls, ["filter Tired", "refusal", `embed ${question}`, "complete"]);
+  assert.equal(result.filter, "Days you felt Tired: 3 days, 3 searched");
+  assert.equal(result.entriesConsidered, 3);
+  assert.match(prompt, /the 3 days you felt Tired\. These are the 3 entries/);
+  // Shown and cited in date order: far (09-01), mid (09-05), near (09-10).
+  assert.ok(prompt.indexOf("far text") < prompt.indexOf("mid text"));
+  assert.ok(prompt.indexOf("mid text") < prompt.indexOf("near text"));
+  assert.deepEqual(result.citations, [
+    { n: 1, label: "Daily Seed", date: "2026-09-01", url: "https://notion.so/far" },
+    { n: 3, label: "Daily Seed", date: "2026-09-10", url: "https://notion.so/near" },
+  ]);
+  assert.doesNotMatch(result.answer, /searched/);
+});
+
+test("filter + meaning sends Claude only the 12 closest entries", async () => {
+  // s00 is closest to [1, 0]; each later one points further away.
+  const seeds = Array.from({ length: 15 }, (_, i) =>
+    seed(`s${String(i).padStart(2, "0")}`, `2026-08-${String(i + 1).padStart(2, "0")}`, [1, i]),
+  );
+  let prompt = "";
+  const result = await answerFilterMeaning("What did I need?", "Tired", TODAY, {
+    seedsWithEnergyTone: async () => seeds,
+    queryRefusal: async () => null,
+    embedQuery: async () => [1, 0],
+    complete: async (_system, p) => {
+      prompt = p;
+      return "ok";
+    },
+  });
+  assert.equal(result.entriesConsidered, 12);
+  assert.match(prompt, /s11 text/);
+  for (const id of ["s12", "s13", "s14"]) assert.doesNotMatch(prompt, new RegExp(`${id} text`));
+});
+
+test("filter + meaning with no matching days calls neither Voyage nor Claude", async () => {
+  const result = await answerFilterMeaning("What did I need on Low days?", "Low", TODAY, {
+    seedsWithEnergyTone: async () => [],
+    queryRefusal: async () => assert.fail("queryRefusal should not be called"),
+    embedQuery: failingEmbed,
+    complete: failingComplete,
+  });
+  assert.equal(result.filter, "Days you felt Low: 0 days");
+  assert.equal(result.answer, "You didn't have any days where you felt Low.");
+  assert.deepEqual(result.citations, []);
+});
+
+test("filter + meaning with no embeddings says semantic search isn't set up, sending nothing", async () => {
+  const result = await answerFilterMeaning("What did I need?", "Tired", TODAY, {
+    seedsWithEnergyTone: async () => [seed("a", "2026-09-01", null), seed("b", "2026-09-02", null), seed("c", "2026-09-03", null, "")],
+    queryRefusal: async () => assert.fail("queryRefusal should not be called"),
+    embedQuery: failingEmbed,
+    complete: failingComplete,
+  });
+  assert.equal(result.filter, "Days you felt Tired: 3 days, 0 searched");
+  assert.match(result.answer, /Semantic search isn't set up for this database/);
+  assert.equal(result.entriesConsidered, 0);
+});
+
+test("filter + meaning on a database that refuses embedding gives the not-set-up answer", async () => {
+  const result = await answerFilterMeaning("What did I need?", "Tired", TODAY, {
+    seedsWithEnergyTone: async () => [seed("a", "2026-09-01", [1, 0])],
+    queryRefusal: async () => "Refusing to embed",
+    embedQuery: failingEmbed,
+    complete: failingComplete,
+  });
+  assert.equal(result.filter, "Days you felt Tired: 1 day, 0 searched");
+  assert.match(result.answer, /Semantic search isn't set up for this database/);
+});
+
+test("filter + meaning on days with no writing doesn't call Voyage or Claude", async () => {
+  const result = await answerFilterMeaning("What did I need?", "Gentle", TODAY, {
+    seedsWithEnergyTone: async () => [seed("a", "2026-09-01", null, "")],
+    queryRefusal: async () => assert.fail("queryRefusal should not be called"),
+    embedQuery: failingEmbed,
+    complete: failingComplete,
+  });
+  assert.equal(result.filter, "Days you felt Gentle: 1 day, 0 searched");
+  assert.match(result.answer, /didn't write any Seeds/);
+});
+
+test("partly embedded: searches only the embedded entries and says how many weren't searched", async () => {
+  let prompt = "";
+  const result = await answerFilterMeaning("What did I need?", "Tired", TODAY, {
+    seedsWithEnergyTone: async () => [
+      seed("e1", "2026-09-01", [1, 0]),
+      seed("u1", "2026-09-02", null),
+      seed("e2", "2026-09-03", [0, 1]),
+      seed("u2", "2026-09-04", null),
+      seed("e3", "2026-09-05", [1, 1]),
+      seed("blank", "2026-09-06", null, ""), // a day, but not unsearched
+    ],
+    queryRefusal: async () => null,
+    embedQuery: async () => [1, 0],
+    complete: async (_system, p) => {
+      prompt = p;
+      return "Sleep [1].";
+    },
+  });
+  assert.equal(result.filter, "Days you felt Tired: 6 days, 3 searched");
+  assert.match(result.answer, /^Sleep \[1\]\.\n\n2 of these days weren't searched because they aren't embedded yet/);
+  assert.doesNotMatch(prompt, /u1 text|u2 text/);
+  assert.equal(result.entriesConsidered, 3);
+});
+
+test("a Voyage failure gives a short message and doesn't call Claude", async () => {
+  const deps = (err: Error) => ({
+    seedsWithEnergyTone: async () => [seed("a", "2026-09-01", [1, 0])],
+    queryRefusal: async () => null,
+    embedQuery: async (): Promise<number[]> => {
+      throw err;
+    },
+    complete: failingComplete,
+  });
+
+  const voyage = await answerFilterMeaning("q", "Tired", TODAY, deps(new VoyageError("Voyage returned 500: boom", 500, null)));
+  assert.equal(voyage.answer, "Semantic search failed: Voyage returned 500. Try again in a moment.");
+  assert.deepEqual(voyage.citations, []);
+
+  const missingKey = await answerFilterMeaning("q", "Tired", TODAY, deps(new Error("VOYAGE_API_KEY is not set. Add it to .env.local.")));
+  assert.equal(missingKey.answer, "VOYAGE_API_KEY is not set. Add it to .env.local.");
+  assert.doesNotMatch(missingKey.answer, /\n\s+at /);
 });
