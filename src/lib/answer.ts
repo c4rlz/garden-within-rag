@@ -131,8 +131,8 @@ export function weeksOf(roots: { entry_date: string | null }[]): Week[] {
   return [...starts].sort().map((from) => ({ from, to: addDays(from, 6) }));
 }
 
-function plural(n: number, word: string): string {
-  return `${n} ${word}${n === 1 ? "" : "s"}`;
+function plural(n: number, word: string, many = `${word}s`): string {
+  return `${n} ${n === 1 ? word : many}`;
 }
 
 export function filterPrompt(tone: string, weeks: Week[], rows: Row[], question: string, today: string): string {
@@ -309,8 +309,177 @@ export async function answerFilterMeaning(
   return { question, range: null, filter, answer, citations: citationsFrom(answer, rows), entriesConsidered: rows.length };
 }
 
+// Words that say nothing about which Blossom is meant: English stopwords plus
+// the filler of a relation question.
+const COMMON_WORDS = new Set(
+  `a about above after again all am an and any are as at be been before being below between both but by can could did do does doing done down during each few for from further had has have having he her here hers him his how i if in into is it its itself just me more most my myself no nor not now of off on once only or other our ours out over own same she should so some such than that the their theirs them then there these they this those through to too under until up very was we were what when where which while who whom why will with would you your yours
+   actually blossom blossoms gone going go goes intention intentions went`.split(/\s+/),
+);
+
+// A title's or question's meaningful words: lowercase, no leading "Sample:",
+// no common words, and a simple plural "s" removed ("mornings" → "morning").
+export function titleWords(text: string): Set<string> {
+  const words = text
+    .toLowerCase()
+    .replace(/^\s*sample:/, "")
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((w) => w && !COMMON_WORDS.has(w))
+    .map((w) => (w.length > 3 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w));
+  return new Set(words);
+}
+
+export interface ScoredBlossom {
+  row: Row;
+  score: number;
+}
+
+// How many distinct words each title shares with the question, highest first.
+// Ties keep the titles' order.
+export function scoreBlossoms(question: string, blossoms: Row[]): ScoredBlossom[] {
+  const asked = titleWords(question);
+  return blossoms
+    .map((row) => ({ row, score: [...titleWords(row.title)].filter((w) => asked.has(w)).length }))
+    .sort((a, b) => b.score - a.score);
+}
+
+// The single clear best match, or null when Claude should choose.
+export function pickBlossom(scored: ScoredBlossom[]): Row | null {
+  const [best, next] = scored;
+  if (!best || best.score === 0 || (next && next.score === best.score)) return null;
+  return best.row;
+}
+
+const CHOOSE_BLOSSOM_SYSTEM = `You match a question about a Garden Within journal to the Blossom (an intention) it is about.
+
+Reply with exactly one Blossom title from the list, copied as written, and nothing else. If the question isn't about any of them, reply "none".`;
+
+export function chooseBlossomPrompt(question: string, titles: string[]): string {
+  return `Blossoms:\n${titles.join("\n")}\n\nQuestion: ${question}`;
+}
+
+function cleanTitle(text: string): string {
+  return text
+    .trim()
+    .toLowerCase()
+    .replace(/[`"'“”‘’]/g, "")
+    .replace(/[.!?,;:]+$/, "")
+    .replace(/^sample:/, "")
+    .trim();
+}
+
+// Accepts only a title from the list, ignoring case, whitespace, quotes,
+// trailing punctuation and a "Sample:" prefix. Anything else is none (null).
+export function parseBlossomReply(reply: string, blossoms: Row[]): Row | null {
+  const cleaned = cleanTitle(reply);
+  if (!cleaned) return null;
+  return blossoms.find((row) => cleanTitle(row.title) === cleaned) ?? null;
+}
+
+// Relation properties on the Seed and Root side. The Blossom's own lists
+// (🌱 Daily Seeds, 🌿 Weekly Roots) stop at 25 items, so they're never read.
+export const RELATION_PROPS = ["Blossoms", "🌸 Blossom", "🌸 Priorities"];
+
+export interface Link {
+  from_id: string;
+  to_id: string;
+  property: string;
+}
+
+// The Seeds and Roots that link to the Blossom, each once.
+export function linkedEntryIds(links: Link[], blossomId: string): string[] {
+  const ids = links
+    .filter((link) => link.to_id === blossomId && RELATION_PROPS.includes(link.property))
+    .map((link) => link.from_id);
+  return [...new Set(ids)];
+}
+
+async function allBlossoms(): Promise<Row[]> {
+  const { rows } = await db().query<Row>(`select ${COLUMNS} from entries where source = 'blossom' order by title`);
+  return rows;
+}
+
+async function linksTo(blossomId: string): Promise<Link[]> {
+  const { rows } = await db().query<Link>(
+    `select from_id, to_id, property from links where to_id = $1 and property = any($2)`,
+    [blossomId, RELATION_PROPS],
+  );
+  return rows;
+}
+
+async function entriesByIds(ids: string[]): Promise<Row[]> {
+  const { rows } = await db().query<Row>(
+    `select ${COLUMNS}
+       from entries
+      where id = any($1::uuid[]) and source in ('seed', 'root')
+      order by entry_date, source`,
+    [ids],
+  );
+  return rows;
+}
+
+export function relationPrompt(title: string, rows: Row[], question: string, today: string): string {
+  const linked = rows.length - 1;
+  return `Today is ${today}. The question is about the Blossom "${title}". Entry [1] is the Blossom itself; after it come the ${plural(linked, "Seed or Root", "Seeds and Roots")} linked to it, in date order.\n\n<entries>\n${numberedContext(rows)}\n</entries>\n\nQuestion: ${question}`;
+}
+
+// Relation questions: find the Blossom the question names, then hand Claude
+// it and every written Seed and Root linked to it.
+export async function answerRelation(
+  question: string,
+  today = localToday(),
+  deps: {
+    complete: (system: string, prompt: string) => Promise<string>;
+    allBlossoms: () => Promise<Row[]>;
+    linksTo: (blossomId: string) => Promise<Link[]>;
+    entriesByIds: (ids: string[]) => Promise<Row[]>;
+  } = { complete, allBlossoms, linksTo, entriesByIds },
+): Promise<Answer> {
+  const none = { question, range: null, filter: null, citations: [], entriesConsidered: 0 };
+
+  const blossoms = await deps.allBlossoms();
+  if (blossoms.length === 0) return { ...none, answer: "You don't have any Blossoms yet." };
+
+  const scored = scoreBlossoms(question, blossoms);
+  const blossom =
+    pickBlossom(scored) ??
+    parseBlossomReply(
+      await deps.complete(CHOOSE_BLOSSOM_SYSTEM, chooseBlossomPrompt(question, blossoms.map((b) => b.title))),
+      blossoms,
+    );
+  if (!blossom) {
+    const closest = scored.filter((s) => s.score > 0).slice(0, 3).map((s) => s.row.title);
+    return {
+      ...none,
+      answer: closest.length
+        ? `I couldn't find a Blossom matching that. Closest: ${closest.join(", ")}.`
+        : "No Blossom matched that question.",
+    };
+  }
+
+  const { title } = blossom;
+  const linked = await deps.entriesByIds(linkedEntryIds(await deps.linksTo(blossom.id), blossom.id));
+  // Every linked Seed and Root counts, even one with nothing written in it.
+  const filter = `Linked to ${title}: ${plural(linked.length, "entry", "entries")}`;
+  if (linked.length === 0) return { ...none, filter, answer: `Nothing is linked to "${title}" yet.` };
+
+  const written = linked
+    .filter((row) => row.content !== "")
+    .sort((a, b) => a.entry_date.localeCompare(b.entry_date) || a.source.localeCompare(b.source));
+  if (written.length === 0) {
+    return {
+      ...none,
+      filter,
+      answer: `${plural(linked.length, "entry", "entries")} ${linked.length === 1 ? "is" : "are"} linked to "${title}", but none have writing.`,
+    };
+  }
+
+  const rows = [blossom, ...written];
+  const answer = await deps.complete(SYSTEM, relationPrompt(title, rows, question, today));
+
+  return { question, range: null, filter, answer, citations: citationsFrom(answer, rows), entriesConsidered: rows.length };
+}
+
 const NOT_SUPPORTED: Partial<Record<QuestionType, string>> = {
-  relation: "Questions about how a Blossom has gone aren't supported yet.",
   "over time": "Questions about change over time aren't supported yet.",
 };
 
@@ -334,11 +503,13 @@ export async function answerQuestion(
     answerLookup: (question: string, today: string) => Promise<Answer>;
     answerFilter: (question: string, tone: string, today: string) => Promise<Answer>;
     answerFilterMeaning: (question: string, tone: string, today: string) => Promise<Answer>;
+    answerRelation: (question: string, today: string) => Promise<Answer>;
   } = {
     classify: complete,
     answerLookup,
     answerFilter: (q, tone, t) => answerFilter(q, tone, t),
     answerFilterMeaning: (q, tone, t) => answerFilterMeaning(q, tone, t),
+    answerRelation: (q, t) => answerRelation(q, t),
   },
 ): Promise<Answer> {
   const route = await routeQuestion(question, today, deps.classify);
@@ -352,5 +523,6 @@ export async function answerQuestion(
     if (route.tone) return deps.answerFilterMeaning(question, route.tone, today);
     return { ...notSupported(question, null), answer: `Name an Energy Tone to filter by: ${ENERGY_TONES.join(", ")}.` };
   }
+  if (route?.type === "relation") return deps.answerRelation(question, today);
   return notSupported(question, route?.type ?? null);
 }

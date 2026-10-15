@@ -4,11 +4,18 @@ import {
   answerFilter,
   answerFilterMeaning,
   answerQuestion,
+  answerRelation,
   citationsFrom,
   filterPrompt,
+  linkedEntryIds,
+  parseBlossomReply,
+  pickBlossom,
+  scoreBlossoms,
+  titleWords,
   weeksOf,
   type Answer,
   type EmbeddedRow,
+  type Link,
   type Row,
 } from "../src/lib/answer";
 import { ENERGY_TONES } from "../src/lib/router";
@@ -150,6 +157,10 @@ function stubDeps() {
         calls.push(`filter + meaning ${tone}`);
         return stubAnswer(q, "filter + meaning");
       },
+      answerRelation: async (q: string, today: string) => {
+        calls.push(`relation ${today}`);
+        return stubAnswer(q, "relation");
+      },
     },
   };
 }
@@ -168,10 +179,7 @@ test("tone questions go to answerFilter with the template's spelling", async () 
 });
 
 test("types not built yet say so without calling any answerer or Claude", async () => {
-  const cases: [string, RegExp][] = [
-    ["How has my morning meditation intention actually gone?", /Blossom has gone aren't supported yet/],
-    ["What was each month's tone?", /change over time aren't supported yet/],
-  ];
+  const cases: [string, RegExp][] = [["What was each month's tone?", /change over time aren't supported yet/]];
   for (const [question, message] of cases) {
     const { calls, deps } = stubDeps();
     const result = await answerQuestion(question, TODAY, deps);
@@ -179,6 +187,13 @@ test("types not built yet say so without calling any answerer or Claude", async 
     assert.deepEqual(result.citations, []);
     assert.deepEqual(calls, [], question);
   }
+});
+
+test("relation questions go to answerRelation", async () => {
+  const { calls, deps } = stubDeps();
+  const result = await answerQuestion("How has my morning meditation intention actually gone?", TODAY, deps);
+  assert.equal(result.answer, "relation");
+  assert.deepEqual(calls, [`relation ${TODAY}`]);
 });
 
 test("a question Claude can't place is not supported", async () => {
@@ -371,4 +386,205 @@ test("a Voyage failure gives a short message and doesn't call Claude", async () 
   const missingKey = await answerFilterMeaning("q", "Tired", TODAY, deps(new Error("VOYAGE_API_KEY is not set. Add it to .env.local.")));
   assert.equal(missingKey.answer, "VOYAGE_API_KEY is not set. Add it to .env.local.");
   assert.doesNotMatch(missingKey.answer, /\n\s+at /);
+});
+
+const blossom = (id: string, title: string, content = "", status: string | null = "In progress"): Row => ({
+  id,
+  source: "blossom",
+  title,
+  entry_date: "2026-08-01",
+  tones: [],
+  status,
+  url: `https://notion.so/${id}`,
+  content,
+});
+
+const MEDITATION = blossom("b-med", "Sample: Start mornings with 5 minute meditation", "Five quiet minutes first.");
+const WALKS = blossom("b-walk", "Sample: Walk after dinner");
+const READING = blossom("b-read", "Sample: Read before bed");
+
+test("titleWords ignores Sample:, case, common words and a simple plural s", () => {
+  assert.deepEqual(titleWords("Sample: Start Mornings with 5 minute meditation"), new Set(["start", "morning", "5", "minute", "meditation"]));
+  assert.deepEqual(titleWords("How has my morning meditation intention actually gone?"), new Set(["morning", "meditation"]));
+  assert.deepEqual(titleWords("less stress"), new Set(["less", "stress"]));
+});
+
+test("scoreBlossoms counts shared words, highest first", () => {
+  const scored = scoreBlossoms("How has my morning meditation intention actually gone?", [WALKS, MEDITATION, READING]);
+  assert.equal(scored[0].row, MEDITATION);
+  assert.equal(scored[0].score, 2);
+  assert.deepEqual(scored.slice(1).map((s) => s.score), [0, 0]);
+  assert.equal(pickBlossom(scored), MEDITATION);
+});
+
+test("pickBlossom gives up on a tie or a zero score", () => {
+  assert.equal(pickBlossom(scoreBlossoms("How are my walks going?", [WALKS, blossom("b2", "Walk the dog")])), null);
+  assert.equal(pickBlossom(scoreBlossoms("How is yoga going?", [WALKS, READING])), null);
+});
+
+test("parseBlossomReply accepts a listed title with or without Sample:, and nothing else", () => {
+  const blossoms = [MEDITATION, WALKS];
+  assert.equal(parseBlossomReply(' "Walk after dinner." ', blossoms), WALKS);
+  assert.equal(parseBlossomReply("sample: walk after dinner", blossoms), WALKS);
+  assert.equal(parseBlossomReply("none", blossoms), null);
+  assert.equal(parseBlossomReply("Walk after lunch", blossoms), null);
+});
+
+test("linkedEntryIds reads every Seed and Root link, not the Blossom's 25-item list", () => {
+  const seedIds = Array.from({ length: 30 }, (_, i) => `s${i}`);
+  const links: Link[] = [
+    // The Blossom's own back-relation, cut off at 25 by Notion.
+    ...seedIds.slice(0, 25).map((id) => ({ from_id: "b-med", to_id: id, property: "🌱 Daily Seeds" })),
+    { from_id: "b-med", to_id: "r1", property: "🌿 Weekly Roots" },
+    // Each Seed's own list is complete.
+    ...seedIds.map((id) => ({ from_id: id, to_id: "b-med", property: "Blossoms" })),
+    { from_id: "r1", to_id: "b-med", property: "🌸 Blossom" },
+    { from_id: "r1", to_id: "b-med", property: "🌸 Priorities" },
+    { from_id: "r2", to_id: "b-med", property: "🌸 Priorities" },
+    // Links to another Blossom.
+    { from_id: "s99", to_id: "b-walk", property: "Blossoms" },
+    { from_id: "r3", to_id: "b-walk", property: "🌸 Blossom" },
+  ];
+  const ids = linkedEntryIds(links, "b-med");
+  assert.equal(ids.length, 32);
+  assert.deepEqual(new Set(ids), new Set([...seedIds, "r1", "r2"]));
+});
+
+function relationDeps() {
+  return {
+    complete: failingComplete,
+    allBlossoms: async () => [MEDITATION, WALKS, READING],
+    linksTo: async (): Promise<Link[]> => assert.fail("linksTo should not be called"),
+    entriesByIds: async (): Promise<Row[]> => assert.fail("entriesByIds should not be called"),
+  };
+}
+
+test("a relation question sends the Blossom and its written linked entries to Claude, with citations", async () => {
+  let system = "";
+  let prompt = "";
+  let askedIds: string[] = [];
+  const linked = [
+    row("s2", "seed", "2026-09-07", "sat for five minutes"),
+    row("r1", "root", "2026-09-07", "meditated most days"),
+    row("s1", "seed", "2026-09-02", "skipped it"),
+    row("s3", "seed", "2026-09-10", ""), // counted, not sent
+  ];
+
+  const result = await answerRelation("How has my morning meditation intention actually gone?", TODAY, {
+    ...relationDeps(),
+    complete: async (s, p) => {
+      system = s;
+      prompt = p;
+      return "It started rough [2] but settled [3][4], as you hoped [1].";
+    },
+    linksTo: async (id) => [
+      { from_id: "s1", to_id: id, property: "Blossoms" },
+      { from_id: "s2", to_id: id, property: "Blossoms" },
+      { from_id: "s3", to_id: id, property: "Blossoms" },
+      { from_id: "r1", to_id: id, property: "🌸 Blossom" },
+      { from_id: "r1", to_id: id, property: "🌸 Priorities" },
+    ],
+    entriesByIds: async (ids) => {
+      askedIds = ids;
+      return linked;
+    },
+  });
+
+  assert.deepEqual(askedIds, ["s1", "s2", "s3", "r1"]);
+  assert.match(system, /Cite every claim/);
+  assert.equal(result.filter, "Linked to Sample: Start mornings with 5 minute meditation: 4 entries");
+  assert.equal(result.entriesConsidered, 4);
+  assert.match(prompt, /\[1\] Blossom · [^\n]+Status: In progress\nFive quiet minutes first\./);
+  // Date order, ties by source: s1 (09-02), r1 (root, 09-07), s2 (seed, 09-07).
+  assert.match(prompt, /\[2\] Daily Seed[^\n]+\nskipped it/);
+  assert.match(prompt, /\[3\] Weekly Root[^\n]+\nmeditated most days/);
+  assert.match(prompt, /\[4\] Daily Seed[^\n]+\nsat for five minutes/);
+  assert.doesNotMatch(prompt, /\[5\]/);
+  assert.match(prompt, /Question: How has my morning meditation intention actually gone\?$/);
+  assert.deepEqual(result.citations, [
+    { n: 1, label: "Blossom", date: "2026-08-01", url: "https://notion.so/b-med" },
+    { n: 2, label: "Daily Seed", date: "2026-09-02", url: "https://notion.so/s1" },
+    { n: 3, label: "Weekly Root", date: "2026-09-07", url: "https://notion.so/r1" },
+    { n: 4, label: "Daily Seed", date: "2026-09-07", url: "https://notion.so/s2" },
+  ]);
+});
+
+test("with a tie, Claude picks the Blossom from the titles", async () => {
+  const calls: string[] = [];
+  const result = await answerRelation("How have my walks gone?", TODAY, {
+    ...relationDeps(),
+    allBlossoms: async () => [WALKS, blossom("b-dog", "Walk the dog")],
+    complete: async (_s, p) => {
+      if (p.startsWith("Blossoms:")) {
+        calls.push("choose");
+        assert.equal(p, "Blossoms:\nSample: Walk after dinner\nWalk the dog\n\nQuestion: How have my walks gone?");
+        return "Walk the dog";
+      }
+      calls.push("answer");
+      return "Good [2].";
+    },
+    linksTo: async (id) => [{ from_id: "s1", to_id: id, property: "Blossoms" }],
+    entriesByIds: async () => [row("s1", "seed", "2026-09-02", "long walk")],
+  });
+  assert.deepEqual(calls, ["choose", "answer"]);
+  assert.equal(result.filter, "Linked to Walk the dog: 1 entry");
+});
+
+test("when Claude says none after a tie, the closest titles are named and no answer is asked for", async () => {
+  let completeCalls = 0;
+  const result = await answerRelation("How have my walks gone?", TODAY, {
+    ...relationDeps(),
+    allBlossoms: async () => [WALKS, blossom("b-dog", "Walk the dog"), READING],
+    complete: async () => {
+      completeCalls++;
+      return "none";
+    },
+  });
+  assert.equal(completeCalls, 1);
+  assert.equal(result.answer, "I couldn't find a Blossom matching that. Closest: Sample: Walk after dinner, Walk the dog.");
+  assert.equal(result.filter, null);
+  assert.deepEqual(result.citations, []);
+});
+
+test("closest matches stop at 3", async () => {
+  const result = await answerRelation("How have my walks gone?", TODAY, {
+    ...relationDeps(),
+    allBlossoms: async () => ["a", "b", "c", "d"].map((id) => blossom(id, `Walk ${id}`)),
+    complete: async () => "none",
+  });
+  assert.equal(result.answer, "I couldn't find a Blossom matching that. Closest: Walk a, Walk b, Walk c.");
+});
+
+test("with no word overlap and Claude saying none, no closest matches are invented", async () => {
+  const result = await answerRelation("How has yoga gone?", TODAY, { ...relationDeps(), complete: async () => "none" });
+  assert.equal(result.answer, "No Blossom matched that question.");
+});
+
+test("with no Blossoms at all, Claude isn't called", async () => {
+  const result = await answerRelation("How has my meditation gone?", TODAY, { ...relationDeps(), allBlossoms: async () => [] });
+  assert.equal(result.answer, "You don't have any Blossoms yet.");
+});
+
+test("a Blossom with nothing linked doesn't call Claude", async () => {
+  const result = await answerRelation("How has my morning meditation gone?", TODAY, {
+    ...relationDeps(),
+    linksTo: async () => [],
+    entriesByIds: async () => [],
+  });
+  assert.equal(result.filter, "Linked to Sample: Start mornings with 5 minute meditation: 0 entries");
+  assert.equal(result.answer, 'Nothing is linked to "Sample: Start mornings with 5 minute meditation" yet.');
+});
+
+test("linked entries with no writing don't call Claude", async () => {
+  const result = await answerRelation("How has my morning meditation gone?", TODAY, {
+    ...relationDeps(),
+    linksTo: async (id) => [
+      { from_id: "s1", to_id: id, property: "Blossoms" },
+      { from_id: "s2", to_id: id, property: "Blossoms" },
+    ],
+    entriesByIds: async () => [row("s1", "seed", "2026-09-01", ""), row("s2", "seed", "2026-09-02", "")],
+  });
+  assert.equal(result.filter, "Linked to Sample: Start mornings with 5 minute meditation: 2 entries");
+  assert.equal(result.answer, '2 entries are linked to "Sample: Start mornings with 5 minute meditation", but none have writing.');
+  assert.equal(result.entriesConsidered, 0);
 });
