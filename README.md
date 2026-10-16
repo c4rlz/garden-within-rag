@@ -97,4 +97,6 @@ Journal entries stay in your local Postgres and are sent to Claude only to answe
 
 Energy Tone questions also send the question itself to Voyage, to embed it for search. That only happens when the matching entries are embedded and the same rule allows it: the sample database, or `EMBED_REAL_JOURNAL=yes`. Otherwise the question isn't sent anywhere.
 
+Theme questions ("What recurring themes haven't I made progress on?") use only the embeddings already stored and never send anything to Voyage, so they need `npm run embed` to have run first.
+
 To embed your real journal, first opt out of training: in MongoDB Atlas, go to **Organization Settings** and turn off **Help Improve Voyage AI Models**. This setting needs a payment method on file. Then set `EMBED_REAL_JOURNAL=yes` in `.env.local` and run `npm run embed`.
