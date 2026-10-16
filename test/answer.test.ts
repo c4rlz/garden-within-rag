@@ -1089,6 +1089,7 @@ test("with no recurring themes, it says so without Claude and counts what wasn't
     ...themeRows("t0", 4, "2026-06-01", axis(0)), // too few entries
     ...themeRows("t1", 6, "2026-06-01", axis(1)).map((r, i) => ({ ...r, entry_date: addDays("2026-06-01", i) })), // one week
     themed("plain", "root", "2026-06-07", null),
+    themed("blank", "seed", "2026-06-08", null, " \n"), // embed skips it too, so it isn't counted
   ];
   const result = await answerThemes(THEMES_Q, TODAY, themeDeps(rows));
   assert.equal(

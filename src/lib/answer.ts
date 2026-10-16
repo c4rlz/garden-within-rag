@@ -985,7 +985,7 @@ export async function answerThemes(
   }
 
   const written = all.filter(
-    (r) => r.content !== "" && (!range || (r.entry_date >= range.from && r.entry_date <= range.to)),
+    (r) => r.content.trim() !== "" && (!range || (r.entry_date >= range.from && r.entry_date <= range.to)),
   );
   const embedded = written.flatMap((r) => (r.embedding ? [r as ThemeRow] : []));
   if (written.length === 0 && range) {
