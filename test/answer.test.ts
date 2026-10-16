@@ -7,6 +7,7 @@ import {
   answerPriorities,
   answerQuestion,
   answerRelation,
+  answerThemes,
   biggestChanges,
   citationsFrom,
   filterPrompt,
@@ -15,6 +16,7 @@ import {
   monthlyToneCounts,
   parseBlossomReply,
   parseMonthSummaries,
+  parseThemeSummaries,
   pickBlossom,
   priorityChanges,
   priorityTimeline,
@@ -181,6 +183,10 @@ function stubDeps() {
         calls.push(`monthly tone ${today}`);
         return stubAnswer(q, "monthly tone");
       },
+      answerThemes: async (q: string, today: string) => {
+        calls.push(`themes ${today}`);
+        return stubAnswer(q, "themes");
+      },
     },
   };
 }
@@ -198,18 +204,19 @@ test("tone questions go to answerFilter with the template's spelling", async () 
   assert.deepEqual(calls, ["filter Overwhelmed"]);
 });
 
-test("types not built yet say so without calling any answerer or Claude", async () => {
-  const cases: [string, RegExp][] = [
-    ["What recurring themes haven't I made progress on?", /change over time aren't supported yet/],
-    ["How have I changed over time?", /change over time aren't supported yet/],
-  ];
-  for (const [question, message] of cases) {
-    const { calls, deps } = stubDeps();
-    const result = await answerQuestion(question, TODAY, deps);
-    assert.match(result.answer, message);
-    assert.deepEqual(result.citations, []);
-    assert.deepEqual(calls, [], question);
-  }
+test("an over-time question with no sub-type says so without calling any answerer or Claude", async () => {
+  const { calls, deps } = stubDeps();
+  const result = await answerQuestion("How have I changed over time?", TODAY, deps);
+  assert.match(result.answer, /change over time aren't supported yet/);
+  assert.deepEqual(result.citations, []);
+  assert.deepEqual(calls, []);
+});
+
+test("theme questions go to answerThemes", async () => {
+  const { calls, deps } = stubDeps();
+  const result = await answerQuestion("What recurring themes haven't I made progress on?", TODAY, deps);
+  assert.equal(result.answer, "themes");
+  assert.deepEqual(calls, [`themes ${TODAY}`]);
 });
 
 test("a question Claude classifies as over time, with no sub-type, isn't supported yet", async () => {
@@ -1025,4 +1032,175 @@ test("a time phrase narrows the months counted", async () => {
   assert.match(prompt, /covers last month: 2026-09-01 to 2026-09-30/);
   assert.doesNotMatch(prompt, /2026-08|old text/);
   assert.deepEqual(result.citations, [{ n: 2, label: "Weekly Root", date: "2026-09-20", url: "https://notion.so/r1" }]);
+});
+
+const themed = (id: string, source: "seed" | "root", entry_date: string, embedding: number[] | null, content = `${id} text`): EmbeddedRow => ({
+  ...row(id, source, entry_date, content),
+  embedding,
+});
+
+const axis = (i: number) => Array.from({ length: 8 }, (_, j) => (j === i ? 1 : 0));
+
+// n Seeds with the same vector, one a week from start.
+const themeRows = (prefix: string, n: number, start: string, embedding: number[] | null): EmbeddedRow[] =>
+  Array.from({ length: n }, (_, i) => themed(`${prefix}-${i + 1}`, "seed", addDays(start, 7 * i), embedding));
+
+const BLOSSOM_SEEDS = blossom("b-seeds", "Sample: Journal more", "", "Seeds");
+const BLOSSOM_NONE = blossom("b-none", "Sample: Rest days", "", null);
+const BLOSSOM_SPROUTS = blossom("b-sprout", "Sample: Budget", "", "Sprouts");
+
+// No embed function: theme questions never send anything to Voyage.
+function themeDeps(
+  rows: EmbeddedRow[],
+  links: Link[] = [],
+  complete: (system: string, prompt: string) => Promise<string> = failingComplete,
+) {
+  return {
+    complete,
+    embeddedSeedsAndRoots: async () => rows,
+    relationLinks: async () => links,
+    allBlossoms: async () => [BLOSSOM_SEEDS, BLOSSOM_NONE, BLOSSOM_SPROUTS],
+  };
+}
+
+const THEMES_Q = "What recurring themes haven't I made progress on?";
+
+test("parseThemeSummaries reads name and summary for the themes asked about", () => {
+  const summaries = parseThemeSummaries(
+    "Here:\n\nTheme 1: Rest — You keep coming back to rest [1].\n**Theme 2:** Self-care - Small things [3].\nTheme 4: Not asked — x [9].\nTheme 1: Duplicate — y.",
+    3,
+  );
+  assert.deepEqual([...summaries], [
+    [1, { name: "Rest", summary: "You keep coming back to rest [1]." }],
+    [2, { name: "Self-care", summary: "Small things [3]." }],
+  ]);
+});
+
+test("with no embeddings, theme questions aren't set up and Claude isn't called", async () => {
+  const result = await answerThemes(THEMES_Q, TODAY, themeDeps(themeRows("t", 6, "2026-06-01", null)));
+  assert.equal(result.answer, "Theme questions aren't set up for this database yet. See README → Privacy.");
+  assert.equal(result.filter, "Recurring themes: 0");
+  assert.equal(result.entriesConsidered, 0);
+  assert.deepEqual(result.citations, []);
+});
+
+test("with no recurring themes, it says so without Claude and counts what wasn't embedded", async () => {
+  const rows = [
+    ...themeRows("t0", 4, "2026-06-01", axis(0)), // too few entries
+    ...themeRows("t1", 6, "2026-06-01", axis(1)).map((r, i) => ({ ...r, entry_date: addDays("2026-06-01", i) })), // one week
+    themed("plain", "root", "2026-06-07", null),
+  ];
+  const result = await answerThemes(THEMES_Q, TODAY, themeDeps(rows));
+  assert.equal(
+    result.answer,
+    "None of your writing forms a recurring theme yet: a theme needs at least 5 entries over 3 different weeks.\n\n1 entry with writing wasn't included because it isn't embedded yet (run npm run embed).",
+  );
+  assert.equal(result.filter, "Recurring themes: 0");
+  assert.equal(result.entriesConsidered, 10);
+});
+
+test("when every recurring theme has progress, it names how many without Claude", async () => {
+  const rows = [...themeRows("t0", 5, "2026-06-01", axis(0)), ...themeRows("t1", 5, "2026-06-01", axis(1))];
+  const links: Link[] = [
+    { from_id: "t0-2", to_id: "b-sprout", property: "Blossoms" },
+    { from_id: "t1-1", to_id: "b-seeds", property: "🌸 Blossom" },
+    { from_id: "t1-4", to_id: "b-sprout", property: "🌸 Priorities" },
+  ];
+  const result = await answerThemes(THEMES_Q, TODAY, themeDeps(rows, links));
+  assert.equal(result.answer, "All 2 recurring themes have a linked Blossom that's made progress.");
+  assert.equal(result.filter, "Recurring themes: 2, 0 without progress");
+  assert.equal(result.entriesConsidered, 10);
+});
+
+test("flagged themes go to Claude in one call, at most 6 by size with 5 examples each, and are cited", async () => {
+  const rows = [
+    ...themeRows("t0", 7, "2026-06-01", axis(0)),
+    ...themeRows("t1", 6, "2026-06-02", axis(1)),
+    ...[2, 3, 4, 5, 6].flatMap((k) => themeRows(`t${k}`, 5, addDays("2026-06-01", k), axis(k))),
+    ...themeRows("t7", 5, "2026-06-01", axis(7)), // has progress
+  ];
+  const links: Link[] = [
+    { from_id: "t0-1", to_id: "b-sprout", property: "Related" }, // not a relation prop
+    { from_id: "t1-1", to_id: "b-seeds", property: "Blossoms" },
+    { from_id: "t1-2", to_id: "b-none", property: "🌸 Blossom" },
+    { from_id: "t1-3", to_id: "b-gone", property: "Blossoms" }, // not a known Blossom
+    { from_id: "t7-3", to_id: "b-sprout", property: "🌸 Priorities" },
+  ];
+  const calls: { system: string; prompt: string }[] = [];
+  const result = await answerThemes(
+    THEMES_Q,
+    TODAY,
+    themeDeps(rows, links, async (system, prompt) => {
+      calls.push({ system, prompt });
+      return "Theme 1: Rest — You keep coming back to rest [1][5].\n**Theme 2:** Money worries — Bills [6].\nTheme 9: Ignored — x [30].";
+    }),
+  );
+
+  assert.equal(calls.length, 1);
+  const { system, prompt } = calls[0];
+  assert.match(system, /already been found and checked/);
+  assert.match(prompt, /covers your whole history/);
+  assert.equal(prompt.match(/## Theme \d/g)?.length, 6);
+  assert.match(prompt, /## Theme 1\n7 entries over 7 weeks\nLinked Blossoms: none\n\n\[1\] Daily Seed · .*\nt0-1 text/);
+  assert.match(prompt, /## Theme 2\n6 entries over 6 weeks\nLinked Blossoms: Sample: Journal more \(Seeds\), Sample: Rest days \(no Status\)\n\n\[6\] /);
+  // The 5 earliest of theme 1's identical vectors; the latest 5-entry theme and the one with progress are cut.
+  assert.doesNotMatch(prompt, /t0-6 text|t1-6 text|t6-1 text|t7-1 text/);
+  assert.match(prompt, /\[30\] /);
+  assert.doesNotMatch(prompt, /\[31\]/);
+
+  assert.equal(result.filter, "Recurring themes: 8, 7 without progress");
+  assert.equal(result.entriesConsidered, 43);
+  const blocks = result.answer.split("\n\n");
+  assert.equal(blocks[0], "**Rest**\n7 entries over 7 weeks · Linked Blossoms: none\nYou keep coming back to rest [1][5].");
+  assert.equal(
+    blocks[1],
+    "**Money worries**\n6 entries over 6 weeks · Linked Blossoms: Sample: Journal more (Seeds), Sample: Rest days (no Status)\nBills [6].",
+  );
+  assert.equal(blocks[2], "**Unnamed theme**\n5 entries over 5 weeks · Linked Blossoms: none\nNo summary for this theme");
+  assert.equal(blocks.length, 7);
+  assert.equal(blocks[6], "1 more theme without progress isn't shown.");
+  assert.deepEqual(result.citations, [
+    { n: 1, label: "Daily Seed", date: "2026-06-01", url: "https://notion.so/t0-1" },
+    { n: 5, label: "Daily Seed", date: "2026-06-29", url: "https://notion.so/t0-5" },
+    { n: 6, label: "Daily Seed", date: "2026-06-02", url: "https://notion.so/t1-1" },
+  ]);
+});
+
+test("partly embedded: clusters the embedded entries and says how many weren't included", async () => {
+  const rows = [...themeRows("t0", 5, "2026-06-01", axis(0)), ...themeRows("plain", 2, "2026-06-03", null)];
+  const result = await answerThemes(THEMES_Q, TODAY, themeDeps(rows, [], async () => "Theme 1: Rest — Rest [2]."));
+  assert.equal(result.filter, "Recurring themes: 1, 1 without progress");
+  assert.equal(result.entriesConsidered, 5);
+  assert.equal(
+    result.answer,
+    "**Rest**\n5 entries over 5 weeks · Linked Blossoms: none\nRest [2].\n\n2 entries with writing weren't included because they aren't embedded yet (run npm run embed).",
+  );
+});
+
+test("a time phrase narrows the entries before clustering", async () => {
+  // Sep 7 to Sep 28 are in last month; Aug 31 and Oct 5 aren't.
+  const rows = themeRows("t0", 6, "2026-08-31", axis(0));
+  rows.push(themed("t0-extra", "root", "2026-09-20", axis(0))); // a Sunday Root, in the week of Sep 14
+  let prompt = "";
+  const result = await answerThemes(
+    "What recurring themes haven't I made progress on last month?",
+    TODAY,
+    themeDeps(rows, [], async (_s, p) => {
+      prompt = p;
+      return "Theme 1: Rest — Rest [1].";
+    }),
+  );
+  assert.deepEqual(result.range, { from: "2026-09-01", to: "2026-09-30", label: "last month" });
+  assert.equal(result.entriesConsidered, 5);
+  assert.match(prompt, /covers last month: 2026-09-01 to 2026-09-30/);
+  assert.match(prompt, /5 entries over 4 weeks/);
+  assert.doesNotMatch(prompt, /t0-1 text|t0-6 text/);
+  assert.deepEqual(result.citations, [{ n: 1, label: "Daily Seed", date: "2026-09-07", url: "https://notion.so/t0-2" }]);
+});
+
+test("a time phrase with no writing in it says so without Claude", async () => {
+  const rows = themeRows("t0", 5, "2026-06-01", axis(0));
+  const result = await answerThemes("What recurring themes haven't I made progress on this week?", TODAY, themeDeps(rows));
+  assert.equal(result.answer, "You didn't write any Seeds or Roots this week (2026-10-12 to 2026-10-14).");
+  assert.equal(result.entriesConsidered, 0);
 });

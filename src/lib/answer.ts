@@ -6,6 +6,19 @@ import { embedRefusal } from "./embed";
 import { ENERGY_TONES, ROOT_TONES, routeQuestion, type QuestionType } from "./router";
 import { rankBySimilarity, TOP_MATCHES } from "./search";
 import { sourceDef, type Source } from "./template";
+import {
+  clusterEntries,
+  isFlagged,
+  isRecurring,
+  linkedBlossomIds,
+  MAX_THEMES_SHOWN,
+  MIN_THEME_ENTRIES,
+  MIN_THEME_WEEKS,
+  pickExamples,
+  RELATION_PROPS,
+  weekCount,
+  type Cluster,
+} from "./themes";
 import { embed, VoyageError } from "./voyage";
 
 export interface Row {
@@ -215,8 +228,13 @@ export async function answerFilter(
 
 export type EmbeddedRow = Row & { embedding: number[] | null };
 
+// pgvector's text form ([0.1,0.2,…]) is valid JSON.
+function parseEmbedding(rows: (Row & { embedding: string | null })[]): EmbeddedRow[] {
+  return rows.map((r) => ({ ...r, embedding: r.embedding === null ? null : (JSON.parse(r.embedding) as number[]) }));
+}
+
 // Every Seed with the Energy Tone, written or not, so the day count matches
-// answerFilter's week count. pgvector's text form ([0.1,0.2,…]) is valid JSON.
+// answerFilter's week count.
 async function seedsWithEnergyTone(tone: string): Promise<EmbeddedRow[]> {
   const { rows } = await db().query<Row & { embedding: string | null }>(
     `select ${COLUMNS}, embedding::text as embedding
@@ -225,7 +243,7 @@ async function seedsWithEnergyTone(tone: string): Promise<EmbeddedRow[]> {
       order by entry_date`,
     [tone],
   );
-  return rows.map((r) => ({ ...r, embedding: r.embedding === null ? null : (JSON.parse(r.embedding) as number[]) }));
+  return parseEmbedding(rows);
 }
 
 async function embedQuery(question: string): Promise<number[]> {
@@ -378,9 +396,8 @@ export function parseBlossomReply(reply: string, blossoms: Row[]): Row | null {
   return blossoms.find((row) => cleanTitle(row.title) === cleaned) ?? null;
 }
 
-// Relation properties on the Seed and Root side. The Blossom's own lists
-// (🌱 Daily Seeds, 🌿 Weekly Roots) stop at 25 items, so they're never read.
-export const RELATION_PROPS = ["Blossoms", "🌸 Blossom", "🌸 Priorities"];
+// Defined in themes.ts, which can't import from here without a cycle.
+export { RELATION_PROPS };
 
 export interface Link {
   from_id: string;
@@ -867,6 +884,189 @@ export async function answerMonthlyTone(
   };
 }
 
+type ThemeRow = Row & { embedding: number[] };
+
+export interface Theme {
+  cluster: Cluster<ThemeRow>;
+  weeks: number;
+  blossoms: Row[]; // the known Blossoms its entries link to
+}
+
+// Every written Seed and Root with a date, embedded or not, so the answer can
+// say how many weren't included.
+async function embeddedSeedsAndRoots(): Promise<EmbeddedRow[]> {
+  const { rows } = await db().query<Row & { embedding: string | null }>(
+    `select ${COLUMNS}, embedding::text as embedding
+       from entries
+      where source in ('seed', 'root') and entry_date is not null and content <> ''
+      order by entry_date, source`,
+  );
+  return parseEmbedding(rows);
+}
+
+async function relationLinks(): Promise<Link[]> {
+  const { rows } = await db().query<Link>(`select from_id, to_id, property from links where property = any($1)`, [
+    RELATION_PROPS,
+  ]);
+  return rows;
+}
+
+const THEMES_SYSTEM = `You name recurring themes in the user's Garden Within journal: Daily Seeds (daily reflections) and Weekly Roots (weekly reviews). Blossoms are their intentions.
+
+The themes have already been found and checked: each one recurs across several weeks, and none of its linked Blossoms has made progress. Don't re-check, merge, re-rank or add to them. For each theme, give it a name of a few words and write one or two sentences on what it's about, using its example entries. Speak to the user as "you". Be brief and plain.
+Cite entries with their number in square brackets, like [2] or [1][3]. Only the numbered entries can be cited; the linked Blossoms are background only.
+Reply with exactly one line per theme, in the form "Theme N: <name> — <summary>", and nothing else.`;
+
+function linkedLabel(blossoms: Row[]): string {
+  return blossoms.map((b) => `${b.title} (${b.status ?? "no Status"})`).join(", ") || "none";
+}
+
+function themeStats(theme: Theme): string {
+  return `${plural(theme.cluster.members.length, "entry", "entries")} over ${plural(theme.weeks, "week")}`;
+}
+
+// Entries are numbered across all themes, so the examples flattened in theme
+// order map citations back with citationsFrom.
+export function themesPrompt(
+  themes: Theme[],
+  examples: Row[][],
+  question: string,
+  today: string,
+  range: DateRange | null,
+): string {
+  let n = 0;
+  const sections = themes
+    .map((theme, i) => {
+      const entries = examples[i].map((row) => `[${++n}] ${entryLabel(row)}\n${row.content}`);
+      return `## Theme ${i + 1}\n${themeStats(theme)}\nLinked Blossoms: ${linkedLabel(theme.blossoms)}\n\n${entries.join("\n\n")}`;
+    })
+    .join("\n\n---\n\n");
+  const covers = range ? `${range.label}: ${range.from} to ${range.to}` : "your whole history";
+  return `Today is ${today}. The question covers ${covers}. These are the ${plural(themes.length, "recurring theme")} without progress, largest first.\n\n<themes>\n${sections}\n</themes>\n\nQuestion: ${question}`;
+}
+
+// Theme lines ("Theme N: <name> — <summary>") for themes 1 to count. Anything else is ignored.
+export function parseThemeSummaries(reply: string, count: number): Map<number, { name: string; summary: string }> {
+  const summaries = new Map<number, { name: string; summary: string }>();
+  for (const line of reply.split("\n")) {
+    const match = line.match(/^[\s*\-#]*Theme\s+(\d+)[*\s]*:\s*(.+?)\s+[—–-]+\s+(\S.*?)\s*$/i);
+    if (!match) continue;
+    const n = Number(match[1]);
+    const name = match[2].replace(/\*+/g, "").trim();
+    if (n >= 1 && n <= count && name && !summaries.has(n)) summaries.set(n, { name, summary: match[3] });
+  }
+  return summaries;
+}
+
+// Theme questions: cluster the stored embeddings of written Seeds and Roots,
+// keep the themes that recur, and flag those with no linked Blossom past
+// Seeds, all in code. Claude only names the flagged themes and summarises
+// their examples, in one call. Nothing is sent to Voyage.
+export async function answerThemes(
+  question: string,
+  today = localToday(),
+  deps: {
+    complete: (system: string, prompt: string) => Promise<string>;
+    embeddedSeedsAndRoots: () => Promise<EmbeddedRow[]>;
+    relationLinks: () => Promise<Link[]>;
+    allBlossoms: () => Promise<Row[]>;
+  } = { complete, embeddedSeedsAndRoots, relationLinks, allBlossoms },
+): Promise<Answer> {
+  const range = parseDateRange(question, today);
+  const all = await deps.embeddedSeedsAndRoots();
+  const none = { question, range, citations: [], entriesConsidered: 0 };
+
+  if (!all.some((r) => r.embedding)) {
+    return {
+      ...none,
+      filter: "Recurring themes: 0",
+      answer: "Theme questions aren't set up for this database yet. See README → Privacy.",
+    };
+  }
+
+  const written = all.filter(
+    (r) => r.content !== "" && (!range || (r.entry_date >= range.from && r.entry_date <= range.to)),
+  );
+  const embedded = written.flatMap((r) => (r.embedding ? [r as ThemeRow] : []));
+  if (written.length === 0 && range) {
+    return {
+      ...none,
+      filter: "Recurring themes: 0",
+      answer: `You didn't write any Seeds or Roots ${range.label} (${range.from} to ${range.to}).`,
+    };
+  }
+
+  const unembedded = written.length - embedded.length;
+  const note =
+    unembedded > 0
+      ? `\n\n${plural(unembedded, "entry", "entries")} with writing ${unembedded === 1 ? "wasn't" : "weren't"} included because ${unembedded === 1 ? "it isn't" : "they aren't"} embedded yet (run npm run embed).`
+      : "";
+
+  const recurring = clusterEntries(embedded).filter(isRecurring);
+  if (recurring.length === 0) {
+    const when = range ? ` ${range.label} (${range.from} to ${range.to})` : "";
+    return {
+      ...none,
+      filter: "Recurring themes: 0",
+      answer: `None of your writing${when} forms a recurring theme yet: a theme needs at least ${MIN_THEME_ENTRIES} entries over ${MIN_THEME_WEEKS} different weeks.${note}`,
+      entriesConsidered: embedded.length,
+    };
+  }
+
+  const blossoms = await deps.allBlossoms();
+  const byId = new Map(blossoms.map((b) => [b.id, b]));
+  const links = await deps.relationLinks();
+  const themes: Theme[] = recurring.map((cluster) => ({
+    cluster,
+    weeks: weekCount(cluster.members),
+    blossoms: linkedBlossomIds(cluster.members.map((r) => r.id), links, byId.keys())
+      .map((id) => byId.get(id)!)
+      .sort((a, b) => a.title.localeCompare(b.title)),
+  }));
+  const flagged = themes
+    .filter((theme) => isFlagged(theme.blossoms))
+    .sort(
+      (a, b) =>
+        b.cluster.members.length - a.cluster.members.length ||
+        a.cluster.members[0].entry_date.localeCompare(b.cluster.members[0].entry_date),
+    );
+  const filter = `Recurring themes: ${recurring.length}, ${flagged.length} without progress`;
+
+  if (flagged.length === 0) {
+    const progress =
+      recurring.length === 1
+        ? "Your 1 recurring theme has a linked Blossom that's made progress."
+        : `All ${recurring.length} recurring themes have a linked Blossom that's made progress.`;
+    return { ...none, filter, answer: `${progress}${note}`, entriesConsidered: embedded.length };
+  }
+
+  const shown = flagged.slice(0, MAX_THEMES_SHOWN);
+  const examples = shown.map((theme) => pickExamples(theme.cluster));
+  const reply = await deps.complete(THEMES_SYSTEM, themesPrompt(shown, examples, question, today, range));
+  const summaries = parseThemeSummaries(reply, shown.length);
+
+  let answer = shown
+    .map((theme, i) => {
+      const { name, summary } = summaries.get(i + 1) ?? { name: "Unnamed theme", summary: "No summary for this theme" };
+      return `**${name}**\n${themeStats(theme)} · Linked Blossoms: ${linkedLabel(theme.blossoms)}\n${summary}`;
+    })
+    .join("\n\n");
+  const hidden = flagged.length - shown.length;
+  if (hidden > 0) {
+    answer += `\n\n${hidden} more ${hidden === 1 ? "theme" : "themes"} without progress ${hidden === 1 ? "isn't" : "aren't"} shown.`;
+  }
+  answer += note;
+
+  return {
+    question,
+    range,
+    filter,
+    answer,
+    citations: citationsFrom(answer, examples.flat()),
+    entriesConsidered: embedded.length,
+  };
+}
+
 const NOT_SUPPORTED: Partial<Record<QuestionType, string>> = {
   "over time": "Questions about change over time aren't supported yet.",
 };
@@ -894,6 +1094,7 @@ export async function answerQuestion(
     answerRelation: (question: string, today: string) => Promise<Answer>;
     answerPriorities: (question: string, today: string) => Promise<Answer>;
     answerMonthlyTone: (question: string, today: string) => Promise<Answer>;
+    answerThemes: (question: string, today: string) => Promise<Answer>;
   } = {
     classify: complete,
     answerLookup,
@@ -902,6 +1103,7 @@ export async function answerQuestion(
     answerRelation: (q, t) => answerRelation(q, t),
     answerPriorities: (q, t) => answerPriorities(q, t),
     answerMonthlyTone: (q, t) => answerMonthlyTone(q, t),
+    answerThemes: (q, t) => answerThemes(q, t),
   },
 ): Promise<Answer> {
   const route = await routeQuestion(question, today, deps.classify);
@@ -916,8 +1118,9 @@ export async function answerQuestion(
     return { ...notSupported(question, null), answer: `Name an Energy Tone to filter by: ${ENERGY_TONES.join(", ")}.` };
   }
   if (route?.type === "relation") return deps.answerRelation(question, today);
-  // Themes aren't built yet, and neither is an over-time question with no sub-type.
+  // An over-time question with no sub-type isn't supported yet.
   if (route?.type === "over time" && route.overTime === "priorities") return deps.answerPriorities(question, today);
   if (route?.type === "over time" && route.overTime === "monthly tone") return deps.answerMonthlyTone(question, today);
+  if (route?.type === "over time" && route.overTime === "themes") return deps.answerThemes(question, today);
   return notSupported(question, route?.type ?? null);
 }
