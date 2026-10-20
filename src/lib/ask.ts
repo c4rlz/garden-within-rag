@@ -50,3 +50,12 @@ export function answerParts(answer: string, citations: Citation[]): AnswerPart[]
   if (text || parts.length === 0) parts.push({ text });
   return parts;
 }
+
+// Splits text at **bold** markers, which Claude and the month and theme
+// headings use. An unpaired ** stays as text.
+export function boldParts(text: string): { text: string; bold: boolean }[] {
+  return text
+    .split(/\*\*(\S(?:.*?\S)?)\*\*/)
+    .map((piece, i) => ({ text: piece, bold: i % 2 === 1 }))
+    .filter((part) => part.text !== "");
+}

@@ -2,7 +2,7 @@
 
 import { useState, type FormEvent } from "react";
 import type { Answer } from "@/lib/answer";
-import { answerParts, MAX_QUESTION_LENGTH } from "@/lib/ask";
+import { answerParts, boldParts, MAX_QUESTION_LENGTH } from "@/lib/ask";
 import styles from "./page.module.css";
 
 type State =
@@ -90,7 +90,9 @@ function AnswerView({ answer }: { answer: Answer }) {
               [{part.cite.n}]
             </a>
           ) : (
-            <span key={i}>{part.text}</span>
+            <span key={i}>
+              {boldParts(part.text).map((piece, j) => (piece.bold ? <strong key={j}>{piece.text}</strong> : piece.text))}
+            </span>
           ),
         )}
       </p>

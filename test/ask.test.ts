@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Answer, Citation } from "../src/lib/answer";
-import { answerParts, askResponse, MAX_QUESTION_LENGTH, parseAskBody } from "../src/lib/ask";
+import { answerParts, askResponse, boldParts, MAX_QUESTION_LENGTH, parseAskBody } from "../src/lib/ask";
 
 test("parseAskBody accepts a question and trims it", () => {
   assert.deepEqual(parseAskBody({ question: "  What did I do last week?  " }), { question: "What did I do last week?" });
@@ -98,4 +98,19 @@ test("answerParts keeps a marker with no matching citation as text", () => {
 test("answerParts returns an answer with no markers as one text part", () => {
   assert.deepEqual(answerParts("Nothing to cite.", cites), [{ text: "Nothing to cite." }]);
   assert.deepEqual(answerParts("", []), [{ text: "" }]);
+});
+
+test("boldParts marks **bold** runs and keeps the rest as text", () => {
+  assert.deepEqual(boldParts("**Oct 2026**\nMostly Tired, **some** Happy"), [
+    { text: "Oct 2026", bold: true },
+    { text: "\nMostly Tired, ", bold: false },
+    { text: "some", bold: true },
+    { text: " Happy", bold: false },
+  ]);
+});
+
+test("boldParts leaves an unpaired or empty ** as text", () => {
+  assert.deepEqual(boldParts("a ** b"), [{ text: "a ** b", bold: false }]);
+  assert.deepEqual(boldParts("a **** b"), [{ text: "a **** b", bold: false }]);
+  assert.deepEqual(boldParts(""), []);
 });
