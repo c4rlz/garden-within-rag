@@ -123,3 +123,69 @@
 .column a:hover {
   text-decoration-color: currentColor;
 }
+
+.askForm {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.askForm textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--background);
+  color: var(--foreground);
+  font: inherit;
+  font-size: 15px;
+  resize: vertical;
+}
+
+.askForm button {
+  padding: 6px 16px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--foreground);
+  color: var(--background);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.askForm button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+/* Keeps the answer's paragraphs and line breaks. */
+.answer {
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+
+.cite,
+.sources a {
+  text-decoration: underline;
+  text-decoration-color: var(--border);
+  text-underline-offset: 3px;
+}
+
+.cite {
+  color: var(--text-muted);
+  font-size: 0.85em;
+}
+
+.cite:hover,
+.sources a:hover {
+  text-decoration-color: currentColor;
+}
+
+.sources {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 14px;
+}

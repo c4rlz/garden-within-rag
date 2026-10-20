@@ -64,7 +64,7 @@ function completeWithClaudeCode(system: string, prompt: string): Promise<string>
       }
       if (code !== 0 || !parsed || parsed.is_error || typeof parsed.result !== "string") {
         const detail = (parsed?.result ?? stderr ?? stdout).trim().slice(0, 1000);
-        reject(new Error(`Claude Code didn't answer (exit ${code}). ${detail}`));
+        reject(new Error(`Claude Code didn't answer (exit ${code}).\n${detail}`));
         return;
       }
       resolve(parsed.result.trim());
