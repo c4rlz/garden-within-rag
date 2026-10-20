@@ -100,3 +100,9 @@ Energy Tone questions also send the question itself to Voyage, to embed it for s
 Theme questions ("What recurring themes haven't I made progress on?") use only the embeddings already stored and never send anything to Voyage, so they need `npm run embed` to have run first.
 
 To embed your real journal, first opt out of training: in MongoDB Atlas, go to **Organization Settings** and turn off **Help Improve Voyage AI Models**. This setting needs a payment method on file. Then set `EMBED_REAL_JOURNAL=yes` in `.env.local` and run `npm run embed`.
+
+### Before adding your real journal
+
+- [ ] Opt out of Voyage training (see above) before setting `EMBED_REAL_JOURNAL=yes`.
+- [ ] Bind the dev server to localhost (`next dev -H 127.0.0.1`). By default `next dev` listens on every network interface, and the page has no login, so anyone on the same Wi-Fi could open it.
+- [ ] Turn on FileVault (`fdesetup status` to check). Entries are stored unencrypted in Postgres and in Time Machine backups.
