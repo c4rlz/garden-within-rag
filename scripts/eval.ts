@@ -15,7 +15,7 @@ try {
   const kind = await datasetKind();
   let unembedded = 0;
   if (kind === "sample") {
-    const { rows } = await db().query("select count(*)::int as n from entries where content <> '' and embedding is null");
+    const { rows } = await db().query("select count(*)::int as n from entries where content ~ '\\S' and embedding is null");
     unembedded = rows[0].n;
   }
   const refusal = evalRefusal(kind, unembedded);
