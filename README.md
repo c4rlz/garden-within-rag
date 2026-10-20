@@ -59,6 +59,8 @@ npm run ask -- "What did I say I could let go of last week?"
 npm run dev                  # the landing page, at http://localhost:3000
 ```
 
+You can also ask questions from the box on the landing page; answers link each citation to its Notion page.
+
 `ingest` prints how many pages it found in each database and how many have writing, which is a quick check that the token and links work.
 
 If you set up the database before the sample data existed, run `npm run db:setup` again. It's safe to re-run and adds the `dataset` table that `ingest` checks.
