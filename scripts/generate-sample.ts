@@ -2,11 +2,10 @@
 // Writes sample/garden.json: a year of made-up Garden Within pages for demos and
 // evals. It uses a seeded random generator and fixed dates, never today's date,
 // so every run writes the same file. npm run sample:load shifts the dates.
-import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import type { PageObjectResponse } from "@notionhq/client";
-import type { SampleDataset } from "../src/lib/sample";
+import { uuidFromKey, type SampleDataset } from "../src/lib/sample";
 
 const START = "2025-01-06"; // a Monday
 const WEEKS = 52;
@@ -28,13 +27,6 @@ function addDays(iso: string, days: number): string {
   const d = new Date(`${iso}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString().slice(0, 10);
-}
-
-// A UUID made from a stable key, so ids don't depend on generation order.
-function uuidFromKey(key: string): string {
-  const h = createHash("sha1").update(`garden-within-sample:${key}`).digest("hex");
-  const variant = ((parseInt(h[16], 16) & 3) | 8).toString(16);
-  return `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-${variant}${h.slice(17, 20)}-${h.slice(20, 32)}`;
 }
 
 const title = (s: string) => ({ type: "title", title: [{ plain_text: s }] });

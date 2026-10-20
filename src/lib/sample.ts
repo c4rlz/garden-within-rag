@@ -1,6 +1,7 @@
 // Made-up Garden Within pages for demos and evals, kept in sample/garden.json.
 // Dates in the file are fixed; loading moves them by whole weeks so the newest
 // Seed falls in the past week and every Week Of stays a Monday.
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { PageObjectResponse } from "@notionhq/client";
 import { flattenProperty, toEntry, type Entry } from "./notion";
@@ -17,6 +18,15 @@ const LISTS = { seed: "seeds", root: "roots", blossom: "blossoms" } as const;
 
 export async function readSampleDataset(): Promise<SampleDataset> {
   return JSON.parse(await readFile(new URL("../../sample/garden.json", import.meta.url), "utf8"));
+}
+
+// A UUID made from a stable key such as "seed:2025-12-29", "root:2025-03-31" or
+// "blossom:meditation", so ids don't depend on generation order. Keys use the
+// unshifted dates, so they name the same page however far loading moved it.
+export function uuidFromKey(key: string): string {
+  const h = createHash("sha1").update(`garden-within-sample:${key}`).digest("hex");
+  const variant = ((parseInt(h[16], 16) & 3) | 8).toString(16);
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-${variant}${h.slice(17, 20)}-${h.slice(20, 32)}`;
 }
 
 const DAY_MS = 86_400_000;

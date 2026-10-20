@@ -9,6 +9,12 @@ export async function datasetKind(): Promise<"sample" | null> {
   return rows[0]?.kind === "sample" ? "sample" : null;
 }
 
+// Weeks npm run sample:load moved the sample dates by.
+export async function shiftWeeks(): Promise<number> {
+  const { rows } = await db().query("select shift_weeks from dataset where kind = 'sample' limit 1");
+  return rows[0]?.shift_weeks ?? 0;
+}
+
 export async function markSample(shiftWeeks: number): Promise<void> {
   await db().query(
     `insert into dataset (kind, shift_weeks) values ('sample', $1)
