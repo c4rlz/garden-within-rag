@@ -1,12 +1,50 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+  --text-muted: #6b6a66;
+  --border: rgba(11, 11, 11, 0.12);
+  --baseline: #c3c2b7;
+  --cell-empty: #ebeae5;
+
+  /* One color per tone. Each list takes the categorical slots in order, checked
+     for color-blind separation against this background and the dark one. */
+  --tone-tired: #2a78d6;
+  --tone-gentle: #eb6834;
+  --tone-stressed: #1baf7a;
+  --tone-happy: #eda100;
+  --tone-low: #e87ba4;
+
+  --tone-grounded: #2a78d6;
+  --tone-light: #eb6834;
+  --tone-restless: #1baf7a;
+  --tone-energized: #eda100;
+  --tone-tender: #e87ba4;
+  --tone-overwhelmed: #008300;
+  --tone-love: #4a3aa7;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #0a0a0a;
     --foreground: #ededed;
+    --text-muted: #9a9890;
+    --border: rgba(255, 255, 255, 0.14);
+    --baseline: #383835;
+    --cell-empty: #232321;
+
+    --tone-tired: #3987e5;
+    --tone-gentle: #d95926;
+    --tone-stressed: #199e70;
+    --tone-happy: #c98500;
+    --tone-low: #d55181;
+
+    --tone-grounded: #3987e5;
+    --tone-light: #d95926;
+    --tone-restless: #199e70;
+    --tone-energized: #c98500;
+    --tone-tender: #d55181;
+    --tone-overwhelmed: #008300;
+    --tone-love: #9085e9;
   }
 }
 
