@@ -4,7 +4,7 @@ Ask questions about a [Garden Within](https://rattle-layer-d9a.notion.site/The-G
 
 The core rule: compute what can be computed, retrieve only what needs meaning. Dates, tones, statuses and relations are queried directly in Postgres; embeddings are only for the written answers.
 
-**Status:** early. Ingest, embeddings for the sample data, and three question types work: date lookups, Tone / Feeling filters, and Energy Tone questions searched by meaning. Blossom and over-time questions, the landing page and the eval script are next.
+**Status:** early. Ingest, embeddings for the sample data, and three question types work: date lookups, Tone / Feeling filters, and Energy Tone questions searched by meaning. The landing page shows a year of daily Energy Tones, month-by-month tone bars and Blossoms by Status. Blossom and over-time questions and the eval script are next.
 
 ## How it works
 
@@ -56,6 +56,7 @@ createdb garden_within_rag
 npm run db:setup             # create tables
 npm run ingest               # pull from Notion; run again any time to sync
 npm run ask -- "What did I say I could let go of last week?"
+npm run dev                  # the landing page, at http://localhost:3000
 ```
 
 `ingest` prints how many pages it found in each database and how many have writing, which is a quick check that the token and links work.
@@ -71,6 +72,7 @@ createdb garden_within_sample   # needs pgvector, like the real database
 npm run sample:load             # applies the schema, then loads the sample
 DATABASE_URL=postgres:///garden_within_sample npm run embed
 DATABASE_URL=postgres:///garden_within_sample npm run ask -- "What did I say I could let go of last week?"
+DATABASE_URL=postgres:///garden_within_sample npm run dev   # the landing page, at http://localhost:3000
 ```
 
 - `embed` needs `VOYAGE_API_KEY` in `.env.local`. It embeds each entry's written answers with Voyage AI's `voyage-4`, and saves each batch as it comes back. Running it again only sends entries that are new or whose writing changed, so it's also how to finish a run that stopped partway. It refuses to run against any database not marked as sample data (see Privacy).
