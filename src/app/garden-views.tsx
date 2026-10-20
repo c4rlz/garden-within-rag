@@ -1,3 +1,4 @@
+import type { SVGProps } from "react";
 import { connection } from "next/server";
 import { datasetKind } from "@/lib/dataset";
 import { localToday } from "@/lib/dates";
@@ -22,6 +23,30 @@ const EMPTY = <p className={styles.muted}>Nothing to show yet.</p>;
 
 const toneFill = (tone: string) => ({ fill: `var(${TONE_COLORS[tone]})` });
 
+// Root tones reuse the Seed hues, so Roots also get a 45° hatch to tell them apart.
+const ROOT_HATCH = "root-hatch";
+
+function HatchDefs() {
+  return (
+    <svg width={0} height={0} aria-hidden="true" style={{ position: "absolute" }}>
+      <defs>
+        <pattern id={ROOT_HATCH} width={4} height={4} patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+          <line x1={0} y1={0} x2={0} y2={4} style={{ stroke: "var(--background)", strokeWidth: 1.5, strokeOpacity: 0.6 }} />
+        </pattern>
+      </defs>
+    </svg>
+  );
+}
+
+function ToneRect({ tone, ...rect }: SVGProps<SVGRectElement> & { tone: string }) {
+  return (
+    <>
+      <rect {...rect} style={toneFill(tone)} />
+      {ROOT_TONES.includes(tone) && <rect {...rect} fill={`url(#${ROOT_HATCH})`} />}
+    </>
+  );
+}
+
 // Reads Postgres and the date at request time, so it renders behind Suspense.
 export async function GardenViews() {
   await connection();
@@ -33,6 +58,7 @@ export async function GardenViews() {
 
   return (
     <>
+      <HatchDefs />
       {kind === "sample" && (
         <p className={styles.notice}>This page is showing made-up sample data, not a real journal.</p>
       )}
@@ -186,14 +212,14 @@ function Bar({ segments, title, x, base, scale }: { segments: Segment[]; title: 
       {/* An invisible full-height target, so empty and short bars still have a tooltip. */}
       <rect x={x} y={base - CHART_HEIGHT} width={BAR} height={CHART_HEIGHT} fill="transparent" />
       {segments.map((seg) => (
-        <rect
+        <ToneRect
           key={seg.tone}
+          tone={seg.tone}
           x={x}
           y={base - (seg.start + seg.count) * scale}
           width={BAR}
           height={seg.count * scale}
           className={styles.segment}
-          style={toneFill(seg.tone)}
         />
       ))}
     </g>
@@ -214,7 +240,7 @@ function Legend() {
             {group.tones.map((tone) => (
               <li key={tone}>
                 <svg width={12} height={12} aria-hidden="true">
-                  <rect width={12} height={12} rx={2} style={toneFill(tone)} />
+                  <ToneRect tone={tone} width={12} height={12} rx={2} />
                 </svg>
                 {tone}
               </li>
