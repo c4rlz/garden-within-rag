@@ -12,7 +12,6 @@ import {
   formatTotal,
   resolveKeys,
   runEvals,
-  sampleEntryIds,
   sampleUrls,
   type EvalCase,
   type EvalFile,
@@ -176,15 +175,16 @@ const BRIEF: [string, string][] = [
   ["Over time", "What was each month's tone?"],
 ];
 
-test("sample/evals.json holds the brief's seven questions, every key names a sample entry, and each routes by rules", async () => {
+test("sample/evals.json holds the brief's seven questions, every key names a sample page, and each routes by rules", async () => {
   const file: EvalFile = JSON.parse(await readFile(new URL("../sample/evals.json", import.meta.url), "utf8"));
   const dataset = await readSampleDataset();
-  const entries = new Set(sampleEntryIds(dataset));
+  // A Blossom counts: relation answers show Claude the Blossom itself as [1].
+  const pages = new Set(sampleUrls(dataset).values());
   assert.equal(sampleUrls(dataset).size, dataset.seeds.length + dataset.roots.length + dataset.blossoms.length);
 
   assert.deepEqual(file.cases.map((c) => [c.type, c.question]), BRIEF);
   for (const c of file.cases) {
-    resolveKeys(c).forEach((id, i) => assert.ok(entries.has(id), `${c.question}: ${c.cites.from![i]}`));
+    resolveKeys(c).forEach((id, i) => assert.ok(pages.has(id), `${c.question}: ${c.cites.from![i]}`));
     assert.ok(c.cites.atLeast >= 1, c.question);
     assert.ok(c.facts.length >= 1, c.question);
     for (const fact of c.facts) assert.ok((fact.atLeast ?? 1) <= fact.anyOf.length, c.question);
