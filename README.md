@@ -4,7 +4,7 @@ Ask questions about a [Garden Within](https://rattle-layer-d9a.notion.site/The-G
 
 The core rule: compute what can be computed, retrieve only what needs meaning. Dates, tones, statuses and relations are queried directly in Postgres; embeddings are only for the written answers.
 
-**Status:** early. Ingest, embeddings for the sample data, and three question types work: date lookups, Tone / Feeling filters, and Energy Tone questions searched by meaning. The landing page shows a year of daily Energy Tones, month-by-month tone bars and Blossoms by Status. Blossom and over-time questions and the eval script are next.
+**Status:** early. Ingest, embeddings for the sample data, and all seven of the brief's questions work: date lookups, Tone / Feeling filters, Energy Tone questions searched by meaning, Blossom questions, and the over-time questions (priorities, recurring themes, each month's tone). The landing page shows a year of daily Energy Tones, month-by-month tone bars and Blossoms by Status. `npm run eval` checks the seven questions against the sample data.
 
 ## How it works
 
@@ -84,6 +84,20 @@ DATABASE_URL=postgres:///garden_within_sample npm run dev   # the landing page, 
 - Dates move each time the sample is loaded, by whole weeks, so the newest entry is in the past week. Run `npm run sample:load` again to bring them up to date.
 - The sample database is marked as sample data, and `npm run ingest` refuses to run against it, so real entries never mix with made-up ones.
 - `npm run sample:generate` rebuilds `sample/garden.json`. It always writes the same file.
+
+### Evals
+
+`npm run eval` asks the brief's seven questions against the sample database and checks each answer: that it cites the expected entries and mentions the key facts. It prints PASS or FAIL per question, then a total, and exits non-zero if any question fails. The expected results are in `sample/evals.json`, which names entries by their sample ids, so they hold however far loading moved the dates.
+
+```sh
+npm run sample:load
+DATABASE_URL=postgres:///garden_within_sample npm run embed
+npm run eval
+```
+
+- It calls Claude and Voyage, so each run costs money and answers vary between runs. `npm test` doesn't run it.
+- Like `sample:load`, it uses `SAMPLE_DATABASE_URL` (default `postgres:///garden_within_sample`). It refuses to run, sending nothing, unless that database is marked as sample data and every entry with writing is embedded.
+- It treats the Monday after the final week of sample data as today, so "last week" always means that final week, whatever day the sample was loaded.
 
 ## Development
 

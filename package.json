@@ -11,6 +11,7 @@
     "ingest": "tsx --env-file-if-exists=.env.local scripts/ingest.ts",
     "embed": "tsx --env-file-if-exists=.env.local scripts/embed.ts",
     "ask": "tsx --env-file-if-exists=.env.local scripts/ask.ts",
+    "eval": "tsx --env-file-if-exists=.env.local scripts/eval.ts",
     "sample:generate": "tsx scripts/generate-sample.ts",
     "sample:load": "tsx --env-file-if-exists=.env.local scripts/load-sample.ts",
     "test": "tsx --test test/*.test.ts",
