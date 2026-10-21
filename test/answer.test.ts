@@ -26,6 +26,7 @@ import {
   titleWords,
   weeksOf,
   type Answer,
+  type AnswerVector,
   type EmbeddedRow,
   type Link,
   type PriorityChange,
@@ -278,9 +279,16 @@ test("a filter + meaning classification with no tone lists the Energy Tones", as
   assert.deepEqual(calls, []);
 });
 
-const seed = (id: string, entry_date: string, embedding: number[] | null, content = `${id} text`): EmbeddedRow => ({
+// A Seed whose writing is one answer with this embedding, plus any more answers given.
+const seed = (
+  id: string,
+  entry_date: string,
+  embedding: number[] | null,
+  content = `${id} text`,
+  more: AnswerVector[] = [],
+): EmbeddedRow => ({
   ...row(id, "seed", entry_date, content, ["Tired"]),
-  embedding,
+  answers: content.trim() === "" ? [] : [{ prompt: "What is my body asking for?", content, embedding }, ...more],
 });
 
 const failingEmbed = async (): Promise<number[]> => {
@@ -349,6 +357,42 @@ test("filter + meaning sends Claude only the 12 closest entries", async () => {
   assert.equal(result.entriesConsidered, 12);
   assert.match(prompt, /s11 text/);
   for (const id of ["s12", "s13", "s14"]) assert.doesNotMatch(prompt, new RegExp(`${id} text`));
+});
+
+test("filter + meaning ranks each entry by its answer closest to the question", async () => {
+  // "mixed" has an unrelated first answer, but its second is the closest of all.
+  const seeds = [
+    seed("plain", "2026-09-01", [1, 0.5]),
+    seed("mixed", "2026-09-02", [0, 1], "mixed text", [{ prompt: "Body Offering of the Day", content: "mixed walk", embedding: [1, 0] }]),
+    seed("far", "2026-09-03", [0, 1]),
+  ];
+  const result = await answerFilterMeaning("What did I need?", "Tired", TODAY, {
+    seedsWithEnergyTone: async () => seeds,
+    queryRefusal: async () => null,
+    embedQuery: async () => [1, 0],
+    complete: async () => "Walks [2].",
+  });
+  assert.equal(result.filter, "Days you felt Tired: 3 days, 3 searched");
+  assert.deepEqual(result.citations, [{ n: 2, label: "Daily Seed", date: "2026-09-02", url: "https://notion.so/mixed" }]);
+});
+
+test("an entry with any answer not yet embedded isn't searched", async () => {
+  let prompt = "";
+  const result = await answerFilterMeaning("What did I need?", "Tired", TODAY, {
+    seedsWithEnergyTone: async () => [
+      seed("whole", "2026-09-01", [1, 0]),
+      seed("part", "2026-09-02", [1, 0], "part text", [{ prompt: "Body Offering of the Day", content: "new", embedding: null }]),
+    ],
+    queryRefusal: async () => null,
+    embedQuery: async () => [1, 0],
+    complete: async (_system, p) => {
+      prompt = p;
+      return "Rest [1].";
+    },
+  });
+  assert.equal(result.filter, "Days you felt Tired: 2 days, 1 searched");
+  assert.doesNotMatch(prompt, /part text/);
+  assert.match(result.answer, /1 of these days wasn't searched/);
 });
 
 test("filter + meaning with no matching days calls neither Voyage nor Claude", async () => {
@@ -1034,9 +1078,17 @@ test("a time phrase narrows the months counted", async () => {
   assert.deepEqual(result.citations, [{ n: 2, label: "Weekly Root", date: "2026-09-20", url: "https://notion.so/r1" }]);
 });
 
-const themed = (id: string, source: "seed" | "root", entry_date: string, embedding: number[] | null, content = `${id} text`): EmbeddedRow => ({
+// An entry whose writing is one answer with this embedding, unless answers are given.
+const themed = (
+  id: string,
+  source: "seed" | "root",
+  entry_date: string,
+  embedding: number[] | null,
+  content = `${id} text`,
+  answers: AnswerVector[] = content.trim() === "" ? [] : [{ prompt: "What wants clarity?", content, embedding }],
+): EmbeddedRow => ({
   ...row(id, source, entry_date, content),
-  embedding,
+  answers,
 });
 
 const axis = (i: number) => Array.from({ length: 8 }, (_, j) => (j === i ? 1 : 0));
@@ -1048,6 +1100,7 @@ const themeRows = (prefix: string, n: number, start: string, embedding: number[]
 const BLOSSOM_SEEDS = blossom("b-seeds", "Sample: Journal more", "", "Seeds");
 const BLOSSOM_NONE = blossom("b-none", "Sample: Rest days", "", null);
 const BLOSSOM_SPROUTS = blossom("b-sprout", "Sample: Budget", "", "Sprouts");
+const BLOSSOM_BLOOMED = blossom("b-bloom", "Sample: Daily walk", "", "Bloomed");
 
 // No embed function: theme questions never send anything to Voyage.
 function themeDeps(
@@ -1059,7 +1112,7 @@ function themeDeps(
     complete,
     embeddedSeedsAndRoots: async () => rows,
     relationLinks: async () => links,
-    allBlossoms: async () => [BLOSSOM_SEEDS, BLOSSOM_NONE, BLOSSOM_SPROUTS],
+    allBlossoms: async () => [BLOSSOM_SEEDS, BLOSSOM_NONE, BLOSSOM_SPROUTS, BLOSSOM_BLOOMED],
   };
 }
 
@@ -1101,19 +1154,73 @@ test("with no recurring themes, it says so without Claude and counts what wasn't
 });
 
 test("when every recurring theme has progress, it names how many without Claude", async () => {
-  const rows = [...themeRows("t0", 5, "2026-06-01", axis(0)), ...themeRows("t1", 5, "2026-06-01", axis(1))];
+  const rows = [
+    ...themeRows("t0", 5, "2026-06-01", axis(0)),
+    ...themeRows("t1", 5, "2026-06-01", axis(1)),
+    ...themeRows("t2", 4, "2026-06-01", axis(2)), // too few to recur, but counted in every Blossom's overall share
+  ];
   const links: Link[] = [
+    { from_id: "t0-1", to_id: "b-sprout", property: "Blossoms" },
     { from_id: "t0-2", to_id: "b-sprout", property: "Blossoms" },
-    { from_id: "t1-1", to_id: "b-seeds", property: "🌸 Blossom" },
-    { from_id: "t1-4", to_id: "b-sprout", property: "🌸 Priorities" },
+    { from_id: "t1-1", to_id: "b-seeds", property: "🌸 Blossom" }, // 1 of 5 entries, too few to count
+    { from_id: "t1-3", to_id: "b-bloom", property: "🌸 Priorities" },
+    { from_id: "t1-4", to_id: "b-bloom", property: "🌸 Priorities" },
   ];
   const result = await answerThemes(THEMES_Q, TODAY, themeDeps(rows, links));
   assert.equal(result.answer, "All 2 recurring themes have a linked Blossom that's made progress.");
   assert.equal(result.filter, "Recurring themes: 2, 0 without progress");
-  assert.equal(result.entriesConsidered, 10);
+  assert.equal(result.entriesConsidered, 14);
 });
 
-test("flagged themes go to Claude in one call, at most 6 by size with 5 examples each, and are cited", async () => {
+test("a Sprouts Blossom every entry links to doesn't clear a theme whose own Blossom is at Seeds", async () => {
+  // Each phone and family entry also has a breakfast answer, and every entry
+  // links the Sprouts Blossom, as most sample Seeds link meditation.
+  const answer = (prompt: string, content: string, embedding: number[]): AnswerVector => ({ prompt, content, embedding });
+  const entries = (prefix: string, start: string, topic: AnswerVector | null) =>
+    Array.from({ length: 5 }, (_, i) => {
+      const id = `${prefix}-${i + 1}`;
+      const answers = [
+        ...(topic ? [{ ...topic, content: `${id} ${topic.content}` }] : []),
+        answer("Body Offering of the Day", `${id} breakfast`, axis(1)),
+      ];
+      return themed(id, "seed", addDays(start, 7 * i), null, `${id} text`, answers);
+    });
+  const rows = [
+    ...entries("phone", "2026-06-01", answer("What can I let go of?", "phone in bed", axis(0))),
+    ...entries("family", "2026-06-02", answer("What wants clarity?", "calling home", axis(2))),
+    ...entries("plain", "2026-06-03", null),
+  ];
+  const links: Link[] = [
+    ...rows.map((r) => ({ from_id: r.id, to_id: "b-sprout", property: "Blossoms" })),
+    ...rows.slice(0, 5).map((r) => ({ from_id: r.id, to_id: "b-seeds", property: "Blossoms" })),
+  ];
+  let prompt = "";
+  const result = await answerThemes(
+    THEMES_Q,
+    TODAY,
+    themeDeps(rows, links, async (_s, p) => {
+      prompt = p;
+      return "Theme 1: Phone at night — Phone in bed [1].";
+    }),
+  );
+  // Phone, breakfast and family recur. None counts the Sprouts Blossom, so none is cleared.
+  assert.equal(result.filter, "Recurring themes: 3, 3 without progress");
+  assert.equal(result.entriesConsidered, 15);
+  // The phone theme is tied to its stuck Blossom, so it comes first despite being smaller.
+  assert.match(
+    prompt,
+    /## Theme 1\n5 entries over 5 weeks\nLinked Blossoms: Sample: Journal more \(Seeds\)\n\n\[1\] Daily Seed · .*\nWhat can I let go of\?\nphone-1 phone in bed\n/,
+  );
+  assert.match(prompt, /## Theme 2\n15 entries over 5 weeks\nLinked Blossoms: none\n/);
+  assert.match(prompt, /## Theme 3\n5 entries over 5 weeks\nLinked Blossoms: none\n\n\[11\] Daily Seed · .*\nWhat wants clarity\?\nfamily-1 calling home/);
+  assert.equal(
+    result.answer.split("\n\n")[0],
+    "**Phone at night**\n5 entries over 5 weeks · Linked Blossoms: Sample: Journal more (Seeds)\nPhone in bed [1].",
+  );
+  assert.deepEqual(result.citations, [{ n: 1, label: "Daily Seed", date: "2026-06-01", url: "https://notion.so/phone-1" }]);
+});
+
+test("flagged themes go to Claude in one call, at most 6 with 5 examples each, tied to a Blossom first then by size, and are cited", async () => {
   const rows = [
     ...themeRows("t0", 7, "2026-06-01", axis(0)),
     ...themeRows("t1", 6, "2026-06-02", axis(1)),
@@ -1122,9 +1229,16 @@ test("flagged themes go to Claude in one call, at most 6 by size with 5 examples
   ];
   const links: Link[] = [
     { from_id: "t0-1", to_id: "b-sprout", property: "Related" }, // not a relation prop
+    { from_id: "t0-2", to_id: "b-sprout", property: "Related" },
     { from_id: "t1-1", to_id: "b-seeds", property: "Blossoms" },
-    { from_id: "t1-2", to_id: "b-none", property: "🌸 Blossom" },
-    { from_id: "t1-3", to_id: "b-gone", property: "Blossoms" }, // not a known Blossom
+    { from_id: "t1-2", to_id: "b-seeds", property: "Blossoms" },
+    { from_id: "t1-3", to_id: "b-none", property: "🌸 Blossom" },
+    { from_id: "t1-4", to_id: "b-none", property: "🌸 Blossom" },
+    { from_id: "t1-5", to_id: "b-gone", property: "Blossoms" }, // not a known Blossom
+    { from_id: "t1-6", to_id: "b-gone", property: "Blossoms" },
+    { from_id: "t6-1", to_id: "b-none", property: "Blossoms" },
+    { from_id: "t6-2", to_id: "b-none", property: "Blossoms" },
+    { from_id: "t7-1", to_id: "b-sprout", property: "🌸 Priorities" },
     { from_id: "t7-3", to_id: "b-sprout", property: "🌸 Priorities" },
   ];
   const calls: { system: string; prompt: string }[] = [];
@@ -1142,28 +1256,33 @@ test("flagged themes go to Claude in one call, at most 6 by size with 5 examples
   assert.match(system, /already been found and checked/);
   assert.match(prompt, /covers your whole history/);
   assert.equal(prompt.match(/## Theme \d/g)?.length, 6);
-  assert.match(prompt, /## Theme 1\n7 entries over 7 weeks\nLinked Blossoms: none\n\n\[1\] Daily Seed · .*\nt0-1 text/);
-  assert.match(prompt, /## Theme 2\n6 entries over 6 weeks\nLinked Blossoms: Sample: Journal more \(Seeds\), Sample: Rest days \(no Status\)\n\n\[6\] /);
-  // The 5 earliest of theme 1's identical vectors; the latest 5-entry theme and the one with progress are cut.
-  assert.doesNotMatch(prompt, /t0-6 text|t1-6 text|t6-1 text|t7-1 text/);
+  assert.match(
+    prompt,
+    /## Theme 1\n6 entries over 6 weeks\nLinked Blossoms: Sample: Journal more \(Seeds\), Sample: Rest days \(no Status\)\n\n\[1\] Daily Seed · .*\nWhat wants clarity\?\nt1-1 text/,
+  );
+  assert.match(prompt, /## Theme 2\n5 entries over 5 weeks\nLinked Blossoms: Sample: Rest days \(no Status\)\n\n\[6\] Daily Seed · .*\nWhat wants clarity\?\nt6-1 text/);
+  assert.match(prompt, /## Theme 3\n7 entries over 7 weeks\nLinked Blossoms: none\n\n\[11\] Daily Seed · .*\nWhat wants clarity\?\nt0-1 text/);
+  // The 5 earliest of each theme's identical vectors; the latest 5-entry theme
+  // with no Blossom and the one with progress are cut.
+  assert.doesNotMatch(prompt, /t0-6 text|t1-6 text|t5-1 text|t7-1 text/);
   assert.match(prompt, /\[30\] /);
   assert.doesNotMatch(prompt, /\[31\]/);
 
   assert.equal(result.filter, "Recurring themes: 8, 7 without progress");
   assert.equal(result.entriesConsidered, 43);
   const blocks = result.answer.split("\n\n");
-  assert.equal(blocks[0], "**Rest**\n7 entries over 7 weeks · Linked Blossoms: none\nYou keep coming back to rest [1][5].");
   assert.equal(
-    blocks[1],
-    "**Money worries**\n6 entries over 6 weeks · Linked Blossoms: Sample: Journal more (Seeds), Sample: Rest days (no Status)\nBills [6].",
+    blocks[0],
+    "**Rest**\n6 entries over 6 weeks · Linked Blossoms: Sample: Journal more (Seeds), Sample: Rest days (no Status)\nYou keep coming back to rest [1][5].",
   );
-  assert.equal(blocks[2], "**Unnamed theme**\n5 entries over 5 weeks · Linked Blossoms: none\nNo summary for this theme");
+  assert.equal(blocks[1], "**Money worries**\n5 entries over 5 weeks · Linked Blossoms: Sample: Rest days (no Status)\nBills [6].");
+  assert.equal(blocks[2], "**Unnamed theme**\n7 entries over 7 weeks · Linked Blossoms: none\nNo summary for this theme");
   assert.equal(blocks.length, 7);
   assert.equal(blocks[6], "1 more theme without progress isn't shown.");
   assert.deepEqual(result.citations, [
-    { n: 1, label: "Daily Seed", date: "2026-06-01", url: "https://notion.so/t0-1" },
-    { n: 5, label: "Daily Seed", date: "2026-06-29", url: "https://notion.so/t0-5" },
-    { n: 6, label: "Daily Seed", date: "2026-06-02", url: "https://notion.so/t1-1" },
+    { n: 1, label: "Daily Seed", date: "2026-06-02", url: "https://notion.so/t1-1" },
+    { n: 5, label: "Daily Seed", date: "2026-06-30", url: "https://notion.so/t1-5" },
+    { n: 6, label: "Daily Seed", date: "2026-06-07", url: "https://notion.so/t6-1" },
   ]);
 });
 

@@ -18,15 +18,19 @@ export function cosineSimilarity(a: number[], b: number[]): number {
   return dot / Math.sqrt(normA * normB);
 }
 
-// The limit rows closest to query, highest score first. Rows without an
-// embedding are skipped; ties go to the earlier date so the order is stable.
-export function rankBySimilarity<T extends { embedding: number[] | null; entry_date: string }>(
+// The limit entries closest to query, each scored by its closest answer, so an
+// entry matches on the one answer about the question. Answers without an
+// embedding are skipped, and so are entries with none.
+export function rankEntriesByAnswers<T extends { entry_date: string; answers: { embedding: number[] | null }[] }>(
   rows: T[],
   query: number[],
   limit: number,
 ): { row: T; score: number }[] {
   return rows
-    .flatMap((row) => (row.embedding ? [{ row, score: cosineSimilarity(row.embedding, query) }] : []))
+    .flatMap((row) => {
+      const scores = row.answers.flatMap((a) => (a.embedding ? [cosineSimilarity(a.embedding, query)] : []));
+      return scores.length ? [{ row, score: Math.max(...scores) }] : [];
+    })
     .sort((a, b) => b.score - a.score || a.row.entry_date.localeCompare(b.row.entry_date))
     .slice(0, limit);
 }

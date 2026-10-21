@@ -15,7 +15,15 @@ try {
   const kind = await datasetKind();
   let unembedded = 0;
   if (kind === "sample") {
-    const { rows } = await db().query("select count(*)::int as n from entries where content ~ '\\S' and embedding is null");
+    // Entries with any written answer that has no embedding for its current text.
+    const { rows } = await db().query(
+      `select count(*)::int as n from entries e
+        where exists (
+          select 1 from jsonb_each_text(e.written) w
+           where w.value ~ '\\S'
+             and not exists (select 1 from answer_embeddings a where a.entry_id = e.id and a.prompt = w.key and a.content = w.value)
+        )`,
+    );
     unembedded = rows[0].n;
   }
   const refusal = evalRefusal(kind, unembedded);

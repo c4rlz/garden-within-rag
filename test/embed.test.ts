@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { batches, embedAll, embedRefusal, pickEntries } from "../src/lib/embed";
+import { batches, embedAll, embedPlanMessage, embedRefusal, pickAnswers } from "../src/lib/embed";
 
 test("the sample database may be embedded", () => {
   assert.equal(embedRefusal("sample", {}), null);
@@ -23,24 +23,60 @@ test("only exactly yes counts", () => {
   }
 });
 
-const row = (id: string, content: string, embedded = false) => ({ id, content, embedded });
+const entry = (id: string, written: Record<string, string>) => ({ id, written });
+const done = (entry_id: string, prompt: string, content: string) => ({ entry_id, prompt, content });
 
-test("entries with writing and no embedding are picked", () => {
-  const { todo, alreadyDone } = pickEntries([
-    row("a", "Seed\nfelt calm"),
-    row("b", ""),
-    row("c", "  \n\t"),
-    row("d", "Root\nlet go", true),
-    row("e", "Blossom\nidea"),
+test("each written answer is picked on its own, without its prompt label, skipping blank ones", () => {
+  const plan = pickAnswers(
+    [
+      entry("a", { "What wants clarity?": "Why I scroll at night.", "What can I let go of?": "Guilt." }),
+      entry("b", {}),
+      entry("c", { "Highlights": "  \n\t" }),
+      entry("d", { "Highlights": "A walk.", "Insights": "Rest helps." }),
+    ],
+    [],
+  );
+  assert.deepEqual(plan.todo, [
+    { entry_id: "a", prompt: "What wants clarity?", content: "Why I scroll at night." },
+    { entry_id: "a", prompt: "What can I let go of?", content: "Guilt." },
+    { entry_id: "d", prompt: "Highlights", content: "A walk." },
+    { entry_id: "d", prompt: "Insights", content: "Rest helps." },
   ]);
-  assert.deepEqual(todo.map((r) => r.id), ["a", "e"]);
-  assert.equal(alreadyDone, 1);
+  assert.equal(plan.alreadyDone, 0);
+  assert.equal(plan.entries, 2);
 });
 
-test("nothing is picked when every entry is already embedded", () => {
-  const { todo, alreadyDone } = pickEntries([row("a", "x", true), row("b", "y", true), row("c", "")]);
-  assert.deepEqual(todo, []);
-  assert.equal(alreadyDone, 2);
+test("answers already embedded with the same text are skipped, and changed ones picked again", () => {
+  const plan = pickAnswers(
+    [
+      entry("a", { p1: "same", p2: "changed now" }),
+      entry("b", { p1: "done too" }),
+    ],
+    [done("a", "p1", "same"), done("a", "p2", "before"), done("b", "p1", "done too"), done("gone", "p1", "x")],
+  );
+  assert.deepEqual(plan.todo, [{ entry_id: "a", prompt: "p2", content: "changed now" }]);
+  assert.equal(plan.alreadyDone, 2);
+  assert.equal(plan.entries, 1);
+});
+
+test("nothing is picked when every answer is already embedded", () => {
+  const plan = pickAnswers([entry("a", { p: "x" }), entry("b", {})], [done("a", "p", "x")]);
+  assert.deepEqual(plan.todo, []);
+  assert.equal(plan.alreadyDone, 1);
+  assert.equal(plan.entries, 0);
+});
+
+test("the plan message says how many answers and entries before anything is sent", () => {
+  const todo = Array.from({ length: 1612 }, (_, i) => done(`e${i % 427}`, `p${i}`, "x"));
+  assert.equal(
+    embedPlanMessage({ todo, alreadyDone: 0, entries: 427 }),
+    "Embedding 1,612 answers from 427 entries (0 already done). Sending to Voyage AI…",
+  );
+  assert.equal(
+    embedPlanMessage({ todo: [done("a", "p", "x")], alreadyDone: 3, entries: 1 }),
+    "Embedding 1 answer from 1 entry (3 already done). Sending to Voyage AI…",
+  );
+  assert.equal(embedPlanMessage({ todo: [], alreadyDone: 1200, entries: 0 }), "Nothing to embed (1,200 already done).");
 });
 
 test("batches split items in order, none larger than the size", () => {
@@ -56,7 +92,7 @@ test("batches split items in order, none larger than the size", () => {
 });
 
 test("each batch is saved before the next is sent, with content as documents", async () => {
-  const todo = ["a", "b", "c", "d", "e"].map((id) => row(id, `text ${id}`));
+  const todo = ["a", "b", "c", "d", "e"].map((id) => done(id, "p", `text ${id}`));
   const log: string[] = [];
   const embedded = await embedAll(todo, {
     batchSize: 2,
@@ -66,7 +102,7 @@ test("each batch is saved before the next is sent, with content as documents", a
     },
     save: async (batch, vectors) => {
       assert.equal(vectors.length, batch.length);
-      log.push(`save ${batch.map((r) => r.id).join(",")}`);
+      log.push(`save ${batch.map((r) => r.entry_id).join(",")}`);
       return batch.length;
     },
   });
@@ -82,7 +118,7 @@ test("each batch is saved before the next is sent, with content as documents", a
 });
 
 test("a failed batch keeps the batches already saved", async () => {
-  const todo = ["a", "b", "c", "d"].map((id) => row(id, id));
+  const todo = ["a", "b", "c", "d"].map((id) => done(id, "p", id));
   const saved: string[] = [];
   let calls = 0;
   await assert.rejects(
@@ -93,7 +129,7 @@ test("a failed batch keeps the batches already saved", async () => {
         return texts.map(() => [0]);
       },
       save: async (batch) => {
-        saved.push(...batch.map((r) => r.id));
+        saved.push(...batch.map((r) => r.entry_id));
         return batch.length;
       },
     }),
