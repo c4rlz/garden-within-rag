@@ -1,9 +1,9 @@
-// Embeds written answers into entries.embedding with Voyage AI. Only runs on the
-// sample database unless EMBED_REAL_JOURNAL=yes (see README → Privacy).
+// Embeds each written answer on its own into answer_embeddings with Voyage AI.
+// Only runs on the sample database unless EMBED_REAL_JOURNAL=yes (see README → Privacy).
 import { setTimeout as sleep } from "node:timers/promises";
 import { datasetKind } from "../src/lib/dataset";
 import { closeDb, db } from "../src/lib/db";
-import { embedAll, embedRefusal, pickEntries, type EmbedRow } from "../src/lib/embed";
+import { embedAll, embedPlanMessage, embedRefusal, pickAnswers, type AnswerItem } from "../src/lib/embed";
 import { embed, VoyageError, type InputType } from "../src/lib/voyage";
 
 const RATE_LIMIT_RETRIES = 3;
@@ -24,14 +24,22 @@ async function embedWithRetry(texts: string[], inputType: InputType): Promise<nu
   }
 }
 
-async function save(batch: EmbedRow[], vectors: number[][]): Promise<number> {
-  // Matching on content skips an entry an ingest changed mid-run; it stays null
-  // and is picked up next time.
+async function save(batch: AnswerItem[], vectors: number[][]): Promise<number> {
+  // Matching on the entry's current answer skips one an ingest changed mid-run;
+  // it stays unembedded and is picked up next time.
   const { rowCount } = await db().query(
-    `update entries e set embedding = v.embedding::vector
-     from unnest($1::uuid[], $2::text[], $3::text[]) as v(id, embedding, content)
-     where e.id = v.id and e.content = v.content`,
-    [batch.map((e) => e.id), vectors.map((v) => JSON.stringify(v)), batch.map((e) => e.content)],
+    `insert into answer_embeddings (entry_id, prompt, content, embedding)
+     select v.entry_id, v.prompt, v.content, v.embedding::vector
+       from unnest($1::uuid[], $2::text[], $3::text[], $4::text[]) as v(entry_id, prompt, content, embedding)
+       join entries e on e.id = v.entry_id
+      where e.written ->> v.prompt = v.content
+     on conflict (entry_id, prompt) do update set content = excluded.content, embedding = excluded.embedding`,
+    [
+      batch.map((a) => a.entry_id),
+      batch.map((a) => a.prompt),
+      batch.map((a) => a.content),
+      vectors.map((v) => JSON.stringify(v)),
+    ],
   );
   return rowCount ?? 0;
 }
@@ -43,12 +51,14 @@ try {
     console.error(refusal);
     process.exitCode = 1;
   } else {
-    const { rows } = await db().query<EmbedRow>(
-      "select id, content, embedding is not null as embedded from entries where content <> ''",
+    const { rows: entries } = await db().query<{ id: string; written: Record<string, string> }>(
+      "select id, written from entries where content <> ''",
     );
-    const { todo, alreadyDone } = pickEntries(rows);
-    const embedded = await embedAll(todo, { embed: embedWithRetry, save });
-    console.log(`Embedded ${embedded} entries, ${alreadyDone} already done.`);
+    const { rows: done } = await db().query<AnswerItem>("select entry_id, prompt, content from answer_embeddings");
+    const plan = pickAnswers(entries, done);
+    console.log(embedPlanMessage(plan));
+    const embedded = await embedAll(plan.todo, { embed: embedWithRetry, save });
+    console.log(`Embedded ${embedded} answers, ${plan.alreadyDone} already done.`);
   }
 } finally {
   await closeDb();

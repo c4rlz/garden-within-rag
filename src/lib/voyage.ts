@@ -3,7 +3,7 @@
 const ENDPOINT = "https://api.voyageai.com/v1/embeddings";
 const MODEL = "voyage-4";
 
-// Matches entries.embedding vector(1024) in db/schema.sql.
+// Matches answer_embeddings.embedding vector(1024) in db/schema.sql.
 export const EMBEDDING_DIMENSIONS = 1024;
 
 export type InputType = "document" | "query";

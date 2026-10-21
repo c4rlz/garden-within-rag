@@ -17,12 +17,47 @@ export function embedRefusal(kind: "sample" | null, env: Record<string, string |
   ].join("\n");
 }
 
-export type EmbedRow = { id: string; content: string; embedded: boolean };
+// One written answer. content is the answer text alone, without its prompt
+// label: every answer to a prompt shares the label, so including it would
+// group answers by template instead of by topic.
+export interface AnswerItem {
+  entry_id: string;
+  prompt: string;
+  content: string;
+}
 
-// Entries with writing and no embedding yet, plus how many with writing already have one.
-export function pickEntries<T extends EmbedRow>(rows: T[]): { todo: T[]; alreadyDone: number } {
-  const written = rows.filter((r) => r.content.trim() !== "");
-  return { todo: written.filter((r) => !r.embedded), alreadyDone: written.filter((r) => r.embedded).length };
+export interface AnswerPlan {
+  todo: AnswerItem[];
+  alreadyDone: number;
+  entries: number; // distinct entries in todo
+}
+
+// Splits each entry's written answers into one item per prompt, and keeps the
+// ones with no embedding for their current text. Whitespace-only answers are skipped.
+export function pickAnswers(entries: { id: string; written: Record<string, string> }[], done: AnswerItem[]): AnswerPlan {
+  const embedded = new Map(done.map((d) => [`${d.entry_id}\n${d.prompt}`, d.content]));
+  const todo: AnswerItem[] = [];
+  let alreadyDone = 0;
+  for (const entry of entries) {
+    for (const [prompt, content] of Object.entries(entry.written)) {
+      if (content.trim() === "") continue;
+      if (embedded.get(`${entry.id}\n${prompt}`) === content) alreadyDone++;
+      else todo.push({ entry_id: entry.id, prompt, content });
+    }
+  }
+  return { todo, alreadyDone, entries: new Set(todo.map((a) => a.entry_id)).size };
+}
+
+function count(n: number, one: string, many: string): string {
+  return `${n.toLocaleString("en-US")} ${n === 1 ? one : many}`;
+}
+
+// Printed before the first batch is sent.
+export function embedPlanMessage(plan: AnswerPlan): string {
+  const done = `${plan.alreadyDone.toLocaleString("en-US")} already done`;
+  if (plan.todo.length === 0) return `Nothing to embed (${done}).`;
+  const answers = count(plan.todo.length, "answer", "answers");
+  return `Embedding ${answers} from ${count(plan.entries, "entry", "entries")} (${done}). Sending to Voyage AI…`;
 }
 
 export function batches<T>(items: T[], size: number): T[][] {
