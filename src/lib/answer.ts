@@ -4,20 +4,22 @@ import { db } from "./db";
 import { addDays, localToday, parseDateRange, startOfWeek, type DateRange } from "./dates";
 import { embedRefusal } from "./embed";
 import { ENERGY_TONES, ROOT_TONES, routeQuestion, type QuestionType } from "./router";
-import { rankBySimilarity, TOP_MATCHES } from "./search";
+import { rankEntriesByAnswers, TOP_MATCHES } from "./search";
 import { sourceDef, type Source } from "./template";
 import {
   clusterEntries,
+  entryCount,
   isFlagged,
   isRecurring,
-  linkedBlossomIds,
   MAX_THEMES_SHOWN,
   MIN_THEME_ENTRIES,
   MIN_THEME_WEEKS,
   pickExamples,
   RELATION_PROPS,
+  themeBlossomIds,
   weekCount,
   type Cluster,
+  type Clusterable,
 } from "./themes";
 import { embed, VoyageError } from "./voyage";
 
@@ -226,24 +228,54 @@ export async function answerFilter(
   return { question, range: null, filter, answer, citations: citationsFrom(answer, rows), entriesConsidered: rows.length };
 }
 
-export type EmbeddedRow = Row & { embedding: number[] | null };
+// One written answer, with its embedding if it has one for this text.
+export interface AnswerVector {
+  prompt: string;
+  content: string;
+  embedding: number[] | null;
+}
+
+export type EmbeddedRow = Row & { answers: AnswerVector[] };
+
+// Each entry's non-blank written answers, joined to their embeddings when the
+// embedded text still matches. In prompt order.
+const ANSWERS = `coalesce((
+    select json_agg(json_build_object('prompt', w.key, 'content', w.value, 'embedding', a.embedding::text) order by w.key)
+      from jsonb_each_text(entries.written) w
+      left join answer_embeddings a on a.entry_id = entries.id and a.prompt = w.key and a.content = w.value
+     where w.value ~ '\\S'
+  ), '[]'::json) as answers`;
+
+type AnswerJson = { prompt: string; content: string; embedding: string | null };
 
 // pgvector's text form ([0.1,0.2,…]) is valid JSON.
-function parseEmbedding(rows: (Row & { embedding: string | null })[]): EmbeddedRow[] {
-  return rows.map((r) => ({ ...r, embedding: r.embedding === null ? null : (JSON.parse(r.embedding) as number[]) }));
+function parseAnswers(rows: (Row & { answers: AnswerJson[] })[]): EmbeddedRow[] {
+  return rows.map((r) => ({
+    ...r,
+    answers: r.answers.map((a) => ({ ...a, embedding: a.embedding === null ? null : (JSON.parse(a.embedding) as number[]) })),
+  }));
+}
+
+export function hasWriting(row: EmbeddedRow): boolean {
+  return row.answers.length > 0;
+}
+
+// An entry counts as embedded once every one of its written answers is.
+export function isEmbedded(row: EmbeddedRow): boolean {
+  return hasWriting(row) && row.answers.every((a) => a.embedding);
 }
 
 // Every Seed with the Energy Tone, written or not, so the day count matches
 // answerFilter's week count.
 async function seedsWithEnergyTone(tone: string): Promise<EmbeddedRow[]> {
-  const { rows } = await db().query<Row & { embedding: string | null }>(
-    `select ${COLUMNS}, embedding::text as embedding
+  const { rows } = await db().query<Row & { answers: AnswerJson[] }>(
+    `select ${COLUMNS}, ${ANSWERS}
        from entries
       where source = 'seed' and $1 = any(tones) and entry_date is not null
       order by entry_date`,
     [tone],
   );
-  return parseEmbedding(rows);
+  return parseAnswers(rows);
 }
 
 async function embedQuery(question: string): Promise<number[]> {
@@ -266,8 +298,8 @@ function voyageFailure(err: unknown): string {
 }
 
 // Filter + meaning questions: load the Seeds with the Energy Tone in SQL, then
-// rank the embedded ones by similarity to the question and hand Claude the
-// closest. Every check that can stop the answer runs before the question is
+// rank the embedded ones by their answer closest to the question and hand
+// Claude the closest entries. Every check that can stop the answer runs before the question is
 // sent to Voyage.
 export async function answerFilterMeaning(
   question: string,
@@ -287,8 +319,8 @@ export async function answerFilterMeaning(
     return { ...none, filter: `Days you felt ${tone}: 0 days`, answer: `You didn't have any days where you felt ${tone}.` };
   }
 
-  const written = seeds.filter((row) => row.content !== "");
-  const embedded = written.filter((row) => row.embedding);
+  const written = seeds.filter(hasWriting);
+  const embedded = written.filter(isEmbedded);
   const filter = `Days you felt ${tone}: ${plural(seeds.length, "day")}, ${embedded.length} searched`;
 
   if (written.length === 0) {
@@ -314,7 +346,7 @@ export async function answerFilterMeaning(
   }
 
   // Picked by similarity, then shown and cited in date order like the other answerers.
-  const rows = rankBySimilarity(embedded, queryVector, TOP_MATCHES)
+  const rows = rankEntriesByAnswers(embedded, queryVector, TOP_MATCHES)
     .map((match) => match.row)
     .sort((a, b) => a.entry_date.localeCompare(b.entry_date));
 
@@ -884,24 +916,41 @@ export async function answerMonthlyTone(
   };
 }
 
-type ThemeRow = Row & { embedding: number[] };
+// One embedded answer, clustered on its own. id is the entry id and prompt.
+export type ThemeAnswer = Clusterable & { entry: Row; prompt: string; content: string };
 
 export interface Theme {
-  cluster: Cluster<ThemeRow>;
+  cluster: Cluster<ThemeAnswer>;
+  entries: number; // distinct entries its answers come from
   weeks: number;
-  blossoms: Row[]; // the known Blossoms its entries link to
+  blossoms: Row[]; // the known Blossoms that count for it (see themeBlossomIds)
 }
 
 // Every written Seed and Root with a date, embedded or not, so the answer can
 // say how many weren't included.
 async function embeddedSeedsAndRoots(): Promise<EmbeddedRow[]> {
-  const { rows } = await db().query<Row & { embedding: string | null }>(
-    `select ${COLUMNS}, embedding::text as embedding
+  const { rows } = await db().query<Row & { answers: AnswerJson[] }>(
+    `select ${COLUMNS}, ${ANSWERS}
        from entries
       where source in ('seed', 'root') and entry_date is not null and content <> ''
       order by entry_date, source`,
   );
-  return parseEmbedding(rows);
+  return parseAnswers(rows);
+}
+
+// The answers of embedded entries, each one clusterable on its own.
+export function themeAnswers(rows: EmbeddedRow[]): ThemeAnswer[] {
+  return rows.filter(isEmbedded).flatMap((entry) =>
+    entry.answers.map((a) => ({
+      id: `${entry.id}:${a.prompt}`,
+      entry_id: entry.id,
+      entry_date: entry.entry_date,
+      embedding: a.embedding!,
+      entry,
+      prompt: a.prompt,
+      content: a.content,
+    })),
+  );
 }
 
 async function relationLinks(): Promise<Link[]> {
@@ -922,14 +971,15 @@ function linkedLabel(blossoms: Row[]): string {
 }
 
 function themeStats(theme: Theme): string {
-  return `${plural(theme.cluster.members.length, "entry", "entries")} over ${plural(theme.weeks, "week")}`;
+  return `${plural(theme.entries, "entry", "entries")} over ${plural(theme.weeks, "week")}`;
 }
 
-// Entries are numbered across all themes, so the examples flattened in theme
-// order map citations back with citationsFrom.
+// Entries are numbered across all themes, so the examples' entries flattened
+// in theme order map citations back with citationsFrom. Each example shows
+// only the answer in the theme.
 export function themesPrompt(
   themes: Theme[],
-  examples: Row[][],
+  examples: ThemeAnswer[][],
   question: string,
   today: string,
   range: DateRange | null,
@@ -937,12 +987,12 @@ export function themesPrompt(
   let n = 0;
   const sections = themes
     .map((theme, i) => {
-      const entries = examples[i].map((row) => `[${++n}] ${entryLabel(row)}\n${row.content}`);
+      const entries = examples[i].map((a) => `[${++n}] ${entryLabel(a.entry)}\n${a.prompt}\n${a.content}`);
       return `## Theme ${i + 1}\n${themeStats(theme)}\nLinked Blossoms: ${linkedLabel(theme.blossoms)}\n\n${entries.join("\n\n")}`;
     })
     .join("\n\n---\n\n");
   const covers = range ? `${range.label}: ${range.from} to ${range.to}` : "your whole history";
-  return `Today is ${today}. The question covers ${covers}. These are the ${plural(themes.length, "recurring theme")} without progress, largest first.\n\n<themes>\n${sections}\n</themes>\n\nQuestion: ${question}`;
+  return `Today is ${today}. The question covers ${covers}. These are the ${plural(themes.length, "recurring theme")} without progress: those tied to a Blossom first, then largest first.\n\n<themes>\n${sections}\n</themes>\n\nQuestion: ${question}`;
 }
 
 // Theme lines ("Theme N: <name> — <summary>") for themes 1 to count. Anything else is ignored.
@@ -958,9 +1008,9 @@ export function parseThemeSummaries(reply: string, count: number): Map<number, {
   return summaries;
 }
 
-// Theme questions: cluster the stored embeddings of written Seeds and Roots,
-// keep the themes that recur, and flag those with no linked Blossom past
-// Seeds, all in code. Claude only names the flagged themes and summarises
+// Theme questions: cluster the stored embeddings of each written answer in
+// Seeds and Roots, keep the themes that recur, and flag those with no counted
+// Blossom past Seeds, all in code. Claude only names the flagged themes and summarises
 // their examples, in one call. Nothing is sent to Voyage.
 export async function answerThemes(
   question: string,
@@ -976,7 +1026,7 @@ export async function answerThemes(
   const all = await deps.embeddedSeedsAndRoots();
   const none = { question, range, citations: [], entriesConsidered: 0 };
 
-  if (!all.some((r) => r.embedding)) {
+  if (!all.some((r) => r.answers.some((a) => a.embedding))) {
     return {
       ...none,
       filter: "Recurring themes: 0",
@@ -985,9 +1035,9 @@ export async function answerThemes(
   }
 
   const written = all.filter(
-    (r) => r.content.trim() !== "" && (!range || (r.entry_date >= range.from && r.entry_date <= range.to)),
+    (r) => hasWriting(r) && (!range || (r.entry_date >= range.from && r.entry_date <= range.to)),
   );
-  const embedded = written.flatMap((r) => (r.embedding ? [r as ThemeRow] : []));
+  const embedded = written.filter(isEmbedded);
   if (written.length === 0 && range) {
     return {
       ...none,
@@ -1002,7 +1052,7 @@ export async function answerThemes(
       ? `\n\n${plural(unembedded, "entry", "entries")} with writing ${unembedded === 1 ? "wasn't" : "weren't"} included because ${unembedded === 1 ? "it isn't" : "they aren't"} embedded yet (run npm run embed).`
       : "";
 
-  const recurring = clusterEntries(embedded).filter(isRecurring);
+  const recurring = clusterEntries(themeAnswers(embedded)).filter(isRecurring);
   if (recurring.length === 0) {
     const when = range ? ` ${range.label} (${range.from} to ${range.to})` : "";
     return {
@@ -1016,18 +1066,23 @@ export async function answerThemes(
   const blossoms = await deps.allBlossoms();
   const byId = new Map(blossoms.map((b) => [b.id, b]));
   const links = await deps.relationLinks();
+  const allEntryIds = embedded.map((r) => r.id);
   const themes: Theme[] = recurring.map((cluster) => ({
     cluster,
+    entries: entryCount(cluster.members),
     weeks: weekCount(cluster.members),
-    blossoms: linkedBlossomIds(cluster.members.map((r) => r.id), links, byId.keys())
+    blossoms: themeBlossomIds(cluster.members.map((a) => a.entry_id), allEntryIds, links, byId.keys())
       .map((id) => byId.get(id)!)
       .sort((a, b) => a.title.localeCompare(b.title)),
   }));
+  // Themes tied to a stuck Blossom come first, so the ones with none can't
+  // push them past MAX_THEMES_SHOWN. Then largest first.
   const flagged = themes
     .filter((theme) => isFlagged(theme.blossoms))
     .sort(
       (a, b) =>
-        b.cluster.members.length - a.cluster.members.length ||
+        Number(b.blossoms.length > 0) - Number(a.blossoms.length > 0) ||
+        b.entries - a.entries ||
         a.cluster.members[0].entry_date.localeCompare(b.cluster.members[0].entry_date),
     );
   const filter = `Recurring themes: ${recurring.length}, ${flagged.length} without progress`;
@@ -1062,7 +1117,7 @@ export async function answerThemes(
     range,
     filter,
     answer,
-    citations: citationsFrom(answer, examples.flat()),
+    citations: citationsFrom(answer, examples.flat().map((a) => a.entry)),
     entriesConsidered: embedded.length,
   };
 }

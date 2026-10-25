@@ -3,7 +3,8 @@ import type { Entry } from "./notion";
 import type { Source } from "./template";
 
 // Replaces everything stored for one source with the entries just fetched, so
-// pages deleted in Notion disappear here too. Embeddings survive when content is unchanged.
+// pages deleted in Notion disappear here too. An answer's embedding survives
+// while its text is unchanged.
 export async function syncSource(source: Source, entries: Entry[]): Promise<{ upserted: number; removed: number }> {
   const client = await db().connect();
   try {
@@ -16,9 +17,12 @@ export async function syncSource(source: Source, entries: Entry[]): Promise<{ up
            source = excluded.source, title = excluded.title, entry_date = excluded.entry_date,
            tones = excluded.tones, status = excluded.status, url = excluded.url,
            written = excluded.written, fields = excluded.fields,
-           embedding = case when entries.content = excluded.content then entries.embedding end,
            content = excluded.content, notion_last_edited = excluded.notion_last_edited, ingested_at = now()`,
         [e.id, e.source, e.title, e.entryDate, e.tones, e.status, e.url, e.written, e.fields, e.content, e.lastEdited],
+      );
+      await client.query(
+        "delete from answer_embeddings where entry_id = $1 and ($2::jsonb ->> prompt) is distinct from content",
+        [e.id, e.written],
       );
       await client.query("delete from links where from_id = $1", [e.id]);
       for (const link of e.links) {

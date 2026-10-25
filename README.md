@@ -9,7 +9,8 @@ The core rule: compute what can be computed, retrieve only what needs meaning. D
 ## How it works
 
 1. **Ingest** pulls the three template databases (🌱 Daily Seeds, 🌿 Weekly Roots, 🌸 The Garden) through the Notion API. Each page becomes one row: its written answers labeled by prompt, its structured fields, and its Blossom links.
-2. **Ask** first works out the question's type with keyword rules (Claude classifies the rest). Lookup questions find the time period ("last week", "the last 10 days") and load every entry in that range; tone questions ("the weeks I felt Overwhelmed") load the Weekly Roots with that Tone / Feeling and the Daily Seeds from those weeks. Energy Tone questions ("What has my body been asking for on Tired days?") load that tone's Daily Seeds in Postgres, then rank the embedded ones by similarity to the question, and Claude gets the 12 closest; until the database is embedded, they say semantic search isn't set up. Each way, it has Claude answer with numbered citations that map back to Notion pages. Claude runs through your local Claude Code by default, or the Claude API.
+2. **Embed** turns each written answer into its own embedding, so one Daily Seed that mentions meditation, the phone at bedtime and breakfast gives three, each about one topic. Only the answer text is embedded, not the prompt it answers: every answer to a prompt shares that label, so it would group answers by template instead of by what they say.
+3. **Ask** first works out the question's type with keyword rules (Claude classifies the rest). Lookup questions find the time period ("last week", "the last 10 days") and load every entry in that range; tone questions ("the weeks I felt Overwhelmed") load the Weekly Roots with that Tone / Feeling and the Daily Seeds from those weeks. Energy Tone questions ("What has my body been asking for on Tired days?") load that tone's Daily Seeds in Postgres, then rank the embedded ones by their answer closest to the question, and Claude gets the 12 closest; until the database is embedded, they say semantic search isn't set up. Theme questions ("What recurring themes haven't I made progress on?") group the stored answer embeddings by topic, keep the groups that recur across weeks, and flag those whose Blossoms are still at Seeds; a Blossom only counts for a theme when a clear share of its entries link to it, more than entries do in general. Each way, it has Claude answer with numbered citations that map back to Notion pages. Claude runs through your local Claude Code by default, or the Claude API.
 
 ## Setup
 
@@ -77,7 +78,8 @@ DATABASE_URL=postgres:///garden_within_sample npm run ask -- "What did I say I c
 DATABASE_URL=postgres:///garden_within_sample npm run dev   # the landing page, at http://localhost:3000
 ```
 
-- `embed` needs `VOYAGE_API_KEY` in `.env.local`. It embeds each entry's written answers with Voyage AI's `voyage-4`, and saves each batch as it comes back. Running it again only sends entries that are new or whose writing changed, so it's also how to finish a run that stopped partway. It refuses to run against any database not marked as sample data (see Privacy).
+- `embed` needs `VOYAGE_API_KEY` in `.env.local`. It embeds each written answer on its own, without its prompt label, with Voyage AI's `voyage-4`. Before sending anything it prints how many answers from how many entries it will embed, then saves each batch as it comes back. Running it again only sends answers that are new or whose text changed, so it's also how to finish a run that stopped partway. It refuses to run against any database not marked as sample data (see Privacy).
+- Embeddings used to be one per entry. If your database was embedded before that change, run `npm run db:setup` (it drops the old embeddings and adds the `answer_embeddings` table), then `npm run embed` again. Until then, `embed`, `ask` and `eval` fail on the missing table.
 
 - `sample:load` writes to `SAMPLE_DATABASE_URL`, which defaults to `postgres:///garden_within_sample`. It refuses to run, and changes nothing, if that could be the same database as `DATABASE_URL` (default `postgres:///garden_within_rag`): same database name on the same server, where the local socket, `localhost`, `127.0.0.1` and `::1` count as one server whatever the port. It can't tell that two different hostnames point at the same server, so don't use aliases for the real database.
 - The app and `ask` keep using the real database unless you set `DATABASE_URL` to the sample one on purpose.
@@ -96,7 +98,7 @@ npm run eval
 ```
 
 - It calls Claude and Voyage, so each run costs money and answers vary between runs. `npm test` doesn't run it.
-- Like `sample:load`, it uses `SAMPLE_DATABASE_URL` (default `postgres:///garden_within_sample`). It refuses to run, sending nothing, unless that database is marked as sample data and every entry with writing is embedded.
+- Like `sample:load`, it uses `SAMPLE_DATABASE_URL` (default `postgres:///garden_within_sample`). It refuses to run, sending nothing, unless that database is marked as sample data and every written answer is embedded.
 - It treats the Monday after the final week of sample data as today, so "last week" always means that final week, whatever day the sample was loaded.
 
 ## Development
@@ -111,7 +113,7 @@ npm run lint
 
 Journal entries stay in your local Postgres and are sent to Claude only to answer a question, through Claude Code or the API. Real entries are never committed; `.env.local` is git-ignored.
 
-`npm run embed` sends written answers (each entry's `content`) to [Voyage AI](https://www.voyageai.com/) to embed them. Voyage may train on data sent to it unless your account has opted out, so only the sample database is embedded by default: `npm run embed` refuses, sending nothing, against any database not marked as sample data, including the real one at the default `DATABASE_URL`.
+`npm run embed` sends written answers to [Voyage AI](https://www.voyageai.com/) to embed them, each answer on its own and without its prompt label. That's the entry's writing split by prompt; nothing else from the entry is sent. Voyage may train on data sent to it unless your account has opted out, so only the sample database is embedded by default: `npm run embed` refuses, sending nothing, against any database not marked as sample data, including the real one at the default `DATABASE_URL`.
 
 Energy Tone questions also send the question itself to Voyage, to embed it for search. That only happens when the matching entries are embedded and the same rule allows it: the sample database, or `EMBED_REAL_JOURNAL=yes`. Otherwise the question isn't sent anywhere.
 
