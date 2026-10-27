@@ -4,7 +4,12 @@ Ask questions about a [Garden Within](https://rattle-layer-d9a.notion.site/The-G
 
 The core rule: compute what can be computed, retrieve only what needs meaning. Dates, tones, statuses and relations are queried directly in Postgres; embeddings are only for the written answers.
 
-**Status:** early. Ingest, embeddings for the sample data, and all seven of the brief's questions work: date lookups, Tone / Feeling filters, Energy Tone questions searched by meaning, Blossom questions, and the over-time questions (priorities, recurring themes, each month's tone). The landing page shows a year of daily Energy Tones, month-by-month tone bars and Blossoms by Status. `npm run eval` checks the seven questions against the sample data.
+**Status:** all seven of the brief's questions work, with an ask box and data views on the landing page (tickets 01 to 12 are done). Recurring themes were rebuilt in ticket 12 to embed each written answer separately, but haven't been checked with `npm run eval` since; its three tuning values in `src/lib/themes.ts` are untested starting points.
+
+**Next steps:**
+1. Re-embed the sample and run the evals: `npm run sample:load`, then `DATABASE_URL=postgres:///garden_within_sample npm run embed`, then `npm run eval`. Until `sample:load` runs, the sample database is on the old schema and the app fails against it. If the themes question fails, adjust `THEME_SIMILARITY`, `MIN_LINK_SHARE` and `MIN_LINK_LIFT`.
+2. Work through [Before adding your real journal](#before-adding-your-real-journal).
+3. `npm run db:setup` and `npm run ingest` for the real journal; embed it only after opting out of Voyage training.
 
 ## How it works
 
@@ -57,7 +62,7 @@ createdb garden_within_rag
 npm run db:setup             # create tables
 npm run ingest               # pull from Notion; run again any time to sync
 npm run ask -- "What did I say I could let go of last week?"
-npm run dev                  # the landing page, at http://localhost:3000
+npm run dev                  # the landing page, at http://127.0.0.1:3000
 ```
 
 You can also ask questions from the box on the landing page; answers link each citation to its Notion page.
@@ -75,7 +80,7 @@ createdb garden_within_sample   # needs pgvector, like the real database
 npm run sample:load             # applies the schema, then loads the sample
 DATABASE_URL=postgres:///garden_within_sample npm run embed
 DATABASE_URL=postgres:///garden_within_sample npm run ask -- "What did I say I could let go of last week?"
-DATABASE_URL=postgres:///garden_within_sample npm run dev   # the landing page, at http://localhost:3000
+DATABASE_URL=postgres:///garden_within_sample npm run dev   # the landing page, at http://127.0.0.1:3000
 ```
 
 - `embed` needs `VOYAGE_API_KEY` in `.env.local`. It embeds each written answer on its own, without its prompt label, with Voyage AI's `voyage-4`. Before sending anything it prints how many answers from how many entries it will embed, then saves each batch as it comes back. Running it again only sends answers that are new or whose text changed, so it's also how to finish a run that stopped partway. It refuses to run against any database not marked as sample data (see Privacy).
@@ -124,5 +129,5 @@ To embed your real journal, first opt out of training: in MongoDB Atlas, go to *
 ### Before adding your real journal
 
 - [ ] Opt out of Voyage training (see above) before setting `EMBED_REAL_JOURNAL=yes`.
-- [ ] Bind the dev server to localhost (`next dev -H 127.0.0.1`). By default `next dev` listens on every network interface, and the page has no login, so anyone on the same Wi-Fi could open it.
+- [x] Bind the dev server to localhost. `npm run dev` runs `next dev -H 127.0.0.1`: plain `next dev` listens on every network interface, and the page has no login, so anyone on the same Wi-Fi could open it.
 - [ ] Turn on FileVault (`fdesetup status` to check). Entries are stored unencrypted in Postgres and in Time Machine backups.
